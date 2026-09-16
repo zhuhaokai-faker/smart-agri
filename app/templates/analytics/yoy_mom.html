@@ -1,0 +1,155 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}② 产量同比与环比{% endblock %}
+
+{% block content %}
+{{ M.question('本月产量相比上月（环比）和去年同月（同比）是增长还是下降？
+同比剔除季节因素看长期趋势，环比反映短期波动，两个指标要一起看。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">月度产量同比 / 环比
+        <span class="sub">柱=本月产量(吨)　线=同比%　虚线=环比%</span></div>
+      <div class="card-body">
+        <div id="yoyChart" class="chart chart-lg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{ M.gotcha('⚠️ 这次迁移中最重要的一处判断：<u>不能</u>用 LAG() 替代自连接',
+ '很多人迁移到 8.0 时会顺手把同比改成
+ <code>LAG(total_yield_kg, 12) OVER (ORDER BY harvest_month)</code>。
+ <strong>看起来等价，实际上是错的。</strong><br><br>
+ <code>LAG(x, N)</code> 数的是「往前 <strong>N 行</strong>」，
+ 不是「往前 <strong>N 个月</strong>」。<br>
+ 本项目的月度数据<strong>有断档</strong>（缺失 2023-02、2024-03 ——
+ 那两个月没有作物收获，视图里就没有对应行）。一旦有断档，
+ 第 12 行就不再是"去年同月"。<br><br>
+ <strong>实测：29 个月里有 18 个月两种写法结果不同，而且不会报任何错。</strong><br>
+ 下面的对照表格列出了每一个月的差异，可以直接看到 LAG 从第 13 行起整体错位。') }}
+
+{% call M.table_wrap('LAG(x,12) 与 自连接 的逐月对照', '不一致 = 数据有断档，此时自连接才是正确实现', 300) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>月份</th>
+    <th class="num">本月产量(吨)</th>
+    <th class="num">LAG(x,12) 给的"去年同期"</th>
+    <th class="num">自连接给的去年同期</th>
+    <th>判定</th>
+  </tr></thead>
+  <tbody>
+  {% for r in lag_demo %}
+  <tr class="{{ 'table-danger' if r.is_match == '不一致' }}">
+    <td>{{ r.month.strftime('%Y-%m') }}</td>
+    <td class="num">{{ r.this_month | num(1) }}</td>
+    <td class="num">{{ r.lag12_value | num(1) }}</td>
+    <td class="num">{{ r.selfjoin_value | num(1) }}</td>
+    <td><span class="badge-soft {{ 'red' if r.is_match == '不一致' else 'green' }}">
+      {{ r.is_match }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{% call M.table_wrap('逐月明细', '同比列为空表示该月没有去年同期数据', 460) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>月份</th>
+    <th class="num">本月产量(吨)</th>
+    <th class="num">上月产量(吨)</th>
+    <th class="num">环比</th>
+    <th class="num">去年同期(吨)</th>
+    <th class="num">同比</th>
+    <th class="num">产值(万元)</th>
+    <th class="num">单产(kg/亩)</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.month.strftime('%Y-%m') }}</td>
+    <td class="num">{{ r.yield_ton | num(1) }}</td>
+    <td class="num text-muted">{{ r.prev_ton | num(1) }}</td>
+    <td class="num" style="color:{{ '#2e7d32' if (r.mom_pct or 0) >= 0 else '#c62828' }}">
+      {{ r.mom_pct | signed }}</td>
+    <td class="num text-muted">{{ r.yoy_ton | num(1) }}</td>
+    <td class="num" style="color:{{ '#2e7d32' if (r.yoy_pct or 0) >= 0 else '#c62828' }}">
+      {{ r.yoy_pct | signed }}</td>
+    <td class="num">{{ r.value_wan | num(1) }}</td>
+    <td class="num">{{ r.yield_per_mu | num(1) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.yoy_mom, '实际执行的 SQL —— 自连接实现同比与环比') }}
+
+{{ M.note('为什么用自连接，不用条件聚合',
+ '条件聚合的写法是 <code>SUM(CASE WHEN month = \'2024-03\' THEN … END)</code>，
+  要求把每个月份写成独立列 —— 这是<strong>硬编码的宽表</strong>：
+  月份数一变就要改 SQL，而且无法处理不连续的月份（本数据集里就有 2023-01 这种空档）。<br>
+  自连接版本对任意月份数都成立。<br><br>
+  <strong>LEFT JOIN 而不是 INNER JOIN</strong>：数据集的第一个月没有上月，
+  INNER JOIN 会<strong>静默丢掉这个月份</strong>，图表就缺一块。
+  LEFT JOIN 保留该行、比率列为 NULL，是正确行为。') }}
+
+{{ M.note('一个数据口径上的提醒',
+ '月度汇总把<strong>所有作物混在一起</strong>了，而各作物的收获期不同
+ （小麦 5-6 月、玉米 9-10 月、白菜 11 月），所以同比数字会有较大波动。<br>
+ 更严谨的做法是<strong>分作物看同比</strong> —— 这样"今年玉米比去年增产多少"
+ 才有明确的业务含义。本页保留全作物口径是为了和图表的整体趋势对齐，
+ 两者各有用途。', warn=true) }}
+
+{{ M.legacy57('
+<strong>这个查询在 5.7 和 8.0 上写法完全相同</strong> —— 自连接本来就是标准 SQL，
+ 两个版本都支持，也不需要用户变量。<br><br>
+ 8.0 唯一"可以改"的地方是换成 <code>LAG()</code>，
+ 但前面已经证明了那<strong>在本数据集上是错的</strong>。<br><br>
+ <strong>这件事的启示比语法本身更重要：</strong><br>
+ 迁移版本时，最大的风险不是"新语法不会用"，
+ 而是<strong>以为新语法可以无脑替换旧写法</strong>。
+ <code>LAG</code> / <code>ROW_NUMBER</code> / <code>SUM() OVER</code>
+ 都有各自的适用前提，用之前要确认它们的语义和你要的<strong>一致</strong>。<br><br>
+ 本项目把这条结论固化成了断言：
+ <code>sql/05_tests.sql</code> 的断言 8 会检测"两种写法是否不同" ——
+ 如果哪天数据变成连续无断档的，断言会失败，提醒我这条结论需要重新审视。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ROWS = {{ rows | tojson }};
+initChart('yoyChart', chartOpt({
+    grid: { left: 62, right: 62, top: 46, bottom: 58, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['产量(吨)', '同比', '环比'], top: 4 },
+    xAxis: Object.assign(axisStyle(), {
+        data: ROWS.map(d => d.month.slice(0, 7)),
+        axisLabel: { rotate: 45, color: AGRI.gray, fontSize: 10 }
+    }),
+    yAxis: [
+        valueAxis('产量(吨)'),
+        Object.assign(valueAxis('增长率', v => v + '%'), { splitLine: { show: false } })
+    ],
+    series: [
+        { name: '产量(吨)', type: 'bar', barMaxWidth: 24,
+          itemStyle: { color: '#a5d6a7', borderRadius: [3, 3, 0, 0] },
+          data: ROWS.map(d => d.yield_ton) },
+        { name: '同比', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 6,
+          lineStyle: { width: 2.4, color: '#2e7d32' }, itemStyle: { color: '#2e7d32' },
+          /* 同比 = 与去年同期比，剔除季节因素，看长期趋势 */
+          data: ROWS.map(d => d.yoy_pct) },
+        { name: '环比', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 5,
+          lineStyle: { width: 2, type: 'dashed', color: '#ef6c00' },
+          itemStyle: { color: '#ef6c00' },
+          /* 环比 = 与上月比，反映短期波动。
+             注意环比在收获淡季会剧烈跳动（产量接近 0 时比率失去意义），
+             所以解释环比必须结合产量绝对值一起看。 */
+          data: ROWS.map(d => d.mom_pct) }
+    ]
+}));
+</script>
+{% endblock %}

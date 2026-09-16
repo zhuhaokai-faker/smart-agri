@@ -1,0 +1,36 @@
+{#
+  产量记录的行内操作按钮（编辑 / 删除）。
+
+  【为什么要抽成宏】
+  删除的确认文案要解释一个不太直观的语义 —— "删掉记录之后批次仍然是已收获，
+  会重新回到「录入产量」的待办列表里"。这段话抄到多处就会漂移，
+  而漂移掉的那一份没有任何机制能发现。集中在一处，改一次全都跟着变。
+  （同款思路见 _pager.html。）
+
+  【权限】
+  编辑 = 农艺师及以上（can_edit）；删除 = 仅管理员（is_admin）。
+  前端隐藏只是"别让你点了才发现不行"，真正的拦截在服务端装饰器上 ——
+  绕过 HTML 直接 POST 是几秒钟的事。
+
+  ⚠️ 导入这个宏时必须写 `with context`：
+     {% from '_yield_actions.html' import yield_actions with context %}
+     宏默认拿不到模板上下文，而 current_user 来自 flask_login 的上下文处理器
+     （不是全局变量）—— 漏了 with context 会在渲染时报
+     "'current_user' is undefined"，而且只在有产量的页面上才炸。
+#}
+{% macro yield_actions(rec) %}
+  {% if current_user.can_edit %}
+  <a href="{{ url_for('production.yield_edit', yid=rec.id) }}"
+     class="btn btn-sm py-0 px-2 btn-outline-success">编辑</a>
+  {% endif %}
+  {% if current_user.is_admin %}
+  <form method="post"
+        action="{{ url_for('production.yield_delete', yid=rec.id) }}"
+        class="d-inline"
+        onsubmit="return confirm('确认删除这条产量记录？\n\n删除后批次仍是「已收获」，会重新出现在「录入产量」的待办列表里，可以重新录入。\n\n记录本身不可恢复，但删除前的完整快照会留在审计日志里。')">
+    {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="btn btn-sm py-0 px-2 btn-outline-danger">删除</button>
+  </form>
+  {% endif %}
+{% endmacro %}

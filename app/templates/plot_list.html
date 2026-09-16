@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% from '_pager.html' import pager %}
+{% block page_title %}地块管理{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header d-flex align-items-center flex-wrap gap-2">
+    <span>地块列表 <span class="sub">{{ pagination.total }} 块</span></span>
+    <form class="ms-auto d-flex gap-2" method="get">
+      <select name="farm_id" class="form-select form-select-sm" style="width:190px"
+              onchange="this.form.submit()">
+        <option value="">全部农场</option>
+        {% for f in farms %}
+        <option value="{{ f.id }}" {{ 'selected' if f.id == farm_id }}>{{ f.name }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" name="q" class="form-control form-control-sm"
+             style="width:160px" placeholder="编号 / 名称" value="{{ keyword }}">
+      <button class="btn btn-sm btn-success">搜索</button>
+    </form>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>地块编号</th><th>名称</th><th>所属农场</th><th>地区</th>
+        <th class="num">面积(亩)</th><th>土壤</th><th>灌溉</th><th>地力</th><th>状态</th><th></th>
+      </tr></thead>
+      <tbody>
+      {% for p in pagination.items %}
+      <tr>
+        <td><strong>{{ p.plot_no }}</strong></td>
+        <td>{{ p.name }}</td>
+        <td style="font-size:12.5px">{{ p.farm.name }}</td>
+        <td style="font-size:12.5px">{{ p.farm.province }}{{ p.farm.city }}</td>
+        <td class="num">{{ p.area_mu | num(1) }}</td>
+        <td>{{ p.soil_name }}</td>
+        <td>{{ p.irrigation_name }}</td>
+        <td><span class="badge-soft {{ 'green' if p.fertility_name == '优'
+            else 'blue' if p.fertility_name == '中' else 'orange' }}">{{ p.fertility_name }}</span></td>
+        <td><span class="badge-soft {{ 'green' if p.status == 1 else 'gray' }}">
+            {{ '在耕' if p.status == 1 else '闲置' }}</span></td>
+        <td><a href="{{ url_for('base_data.plot_detail', plot_id=p.id) }}"
+               class="btn btn-sm btn-outline-success py-0 px-2">详情</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pager(pagination, 'base_data.plot_list', {'q': keyword or '', 'farm_id': farm_id or ''}) }}
+{% endblock %}

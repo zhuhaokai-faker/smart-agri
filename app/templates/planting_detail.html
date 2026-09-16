@@ -1,0 +1,239 @@
+{% extends 'base.html' %}
+{% from '_yield_actions.html' import yield_actions with context %}
+{% block page_title %}种植批次 · {{ p.batch_no }}{% endblock %}
+{% block content %}
+
+{% if tips %}
+<div class="alert alert-success py-2 mb-3" style="background:#eef7ef;border-color:#cfe6d2">
+  <strong><i class="bi bi-lightbulb"></i> 农事建议：</strong>
+  <ul class="mb-0 mt-1" style="font-size:13px">
+    {% for t in tips %}<li>{{ t }}</li>{% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">批次信息</div>
+      <div class="card-body">
+        <table class="table table-sm mb-0">
+          <tr><th style="width:105px">批次号</th><td style="font-size:12.5px">{{ p.batch_no }}</td></tr>
+          <tr><th>茬口</th><td>{{ p.season }}</td></tr>
+          <tr><th>地块</th><td>
+            <a href="{{ url_for('base_data.plot_detail', plot_id=p.plot.id) }}"
+               class="text-decoration-none">{{ p.plot.plot_no }}</a> · {{ p.plot.name }}</td></tr>
+          <tr><th>农场</th><td>{{ p.plot.farm.name }}</td></tr>
+          <tr><th>作物</th><td>{{ p.crop.full_name }}</td></tr>
+          <tr><th>种植面积</th><td>{{ p.plant_area_mu | num(1) }} 亩</td></tr>
+          <tr><th>密度</th><td>{{ p.density_per_mu }} 株/亩</td></tr>
+          <tr><th>状态</th><td><span class="badge-soft {{ 'green' if p.status == 40
+              else 'blue' if p.status == 30 else 'orange' if p.status == 20 else 'gray' }}">
+              {{ p.status_name }}</span></td></tr>
+          <tr><th>负责人</th><td>{{ p.agronomist.real_name if p.agronomist else '-' }}</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">生育期时间轴</div>
+      <div class="card-body">
+        <table class="table table-sm mb-0">
+          {% set stages = [('播种', p.sow_date), ('出苗', p.emerge_date), ('开花', p.flower_date),
+                           ('成熟', p.mature_date), ('收获', p.harvest_date)] %}
+          {% for name, d in stages %}
+          <tr>
+            <th style="width:70px">{{ name }}</th>
+            <td>{{ d or '—' }}</td>
+            <td class="num" style="font-size:12px;color:#7b8a7e">
+              {% if d %}{{ (d - p.sow_date).days }} 天{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% if p.growth_days_actual %}
+        <div class="note mt-3" style="font-size:12.5px">
+          实际生育期 <strong>{{ p.growth_days_actual }}</strong> 天，
+          品种理论值 <strong>{{ p.crop.growth_days }}</strong> 天
+          {% set diff = p.growth_days_actual - p.crop.growth_days %}
+          （{{ '偏长' if diff > 0 else '偏短' }} {{ diff | abs }} 天）
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">有效积温</div>
+      <div class="card-body">
+        {% set pct = (gdd.gdd | float) / (p.crop.gdd_maturity | float) * 100 if p.crop.gdd_maturity else 0 %}
+        <div class="text-center mb-3">
+          <div style="font-size:30px;font-weight:600;color:#22301f">{{ gdd.gdd | num(0) }}
+            <span style="font-size:13px;color:#7b8a7e">℃·d</span></div>
+          <div style="font-size:12.5px;color:#7b8a7e">
+            品种所需 {{ p.crop.gdd_maturity | num(0) }} ℃·d
+            · 生物学零度 {{ p.crop.base_temp }}℃</div>
+        </div>
+        <div class="progress mb-2" style="height:16px">
+          <div class="progress-bar {{ 'bg-success' if pct >= 100 else 'bg-warning' }}"
+               style="width:{{ [pct, 100] | min }}%">{{ pct | num(0) }}%</div>
+        </div>
+        <div class="text-center" style="font-size:12.5px">
+          {% if pct >= 100 %}<span class="badge-soft green">积温充足，可正常成熟</span>
+          {% elif pct >= 90 %}<span class="badge-soft orange">基本满足</span>
+          {% else %}<span class="badge-soft red">积温不足，可能推迟成熟或减产</span>{% endif %}
+        </div>
+        <div class="note mt-3" style="font-size:12px">
+          用 Python 独立算出的积温，与 SQL 分析 ① 的结果<strong>互为验证</strong> ——
+          两条路径对不上就说明有问题。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">成本汇总</div>
+      <div class="card-body">
+        <table class="table table-sm">
+          <tr><th>物资成本</th><td class="num">{{ material | num(0) }} 元</td>
+              <td class="num" style="color:#7b8a7e">{{ (material / total_cost * 100) | num(1) if total_cost else 0 }}%</td></tr>
+          <tr><th>人工成本</th><td class="num">{{ labor | num(0) }} 元</td>
+              <td class="num" style="color:#7b8a7e">{{ (labor / total_cost * 100) | num(1) if total_cost else 0 }}%</td></tr>
+          <tr><th>机械成本</th><td class="num">{{ machine | num(0) }} 元</td>
+              <td class="num" style="color:#7b8a7e">{{ (machine / total_cost * 100) | num(1) if total_cost else 0 }}%</td></tr>
+          <tr class="table-light"><th>合计</th><td class="num"><strong>{{ total_cost | num(0) }} 元</strong></td>
+              <td class="num" style="color:#7b8a7e">
+                {{ (total_cost / (p.plant_area_mu | float)) | num(0) if p.plant_area_mu else 0 }} 元/亩</td></tr>
+        </table>
+        {% if p.yield_record %}
+        <div class="note mt-2" style="font-size:12.5px">
+          产值 <strong>{{ p.yield_record.output_value | num(0) }}</strong> 元，
+          投入产出比 <strong>{{ ((p.yield_record.output_value | float) / total_cost) | num(2) if total_cost else '-' }}</strong>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header">产量记录</div>
+      <div class="card-body">
+        {% if p.yield_record %}
+        <table class="table table-sm mb-0">
+          <tr><th style="width:120px">收获日期</th><td>{{ p.yield_record.harvest_date }}</td></tr>
+          <tr><th>收获面积</th><td>{{ p.yield_record.harvest_area_mu | num(1) }} 亩</td></tr>
+          <tr><th>总产量</th><td><strong>{{ p.yield_record.yield_kg | num(0) }}</strong> kg</td></tr>
+          <tr><th>单产</th><td><strong style="color:#2e7d32">{{ p.yield_record.yield_per_mu | num(1) }}</strong> kg/亩</td></tr>
+          <tr><th>等级</th><td>{{ p.yield_record.grade_name }}</td></tr>
+          <tr><th>单价</th><td>{{ p.yield_record.unit_price | num(2) }} 元/kg</td></tr>
+          <tr><th>产值</th><td><strong>{{ p.yield_record.output_value | num(0) }}</strong> 元</td></tr>
+          <tr><th>含水率</th><td>{{ p.yield_record.moisture_content }}%</td></tr>
+        </table>
+        <div class="mt-2">{{ yield_actions(p.yield_record) }}</div>
+        {% else %}
+        <div class="text-muted text-center py-4" style="font-size:13px">
+          该批次还没有产量记录。
+          {% if p.status == 40 %}
+          <br><a href="{{ url_for('production.yield_create') }}" class="btn btn-sm btn-success mt-2">
+            去录入产量</a>
+          {% endif %}
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+
+{# 状态流转：只显示合法的目标状态，非法流转按钮根本不出现。
+   这和服务层的状态机是"双重保险"—— 前端不显示、后端也会拒绝。 #}
+{% if current_user.can_edit and not p.is_terminal %}
+<div class="card mb-3">
+  <div class="card-header">状态流转
+    <span class="sub">农事流程不可逆，只允许合法的流转</span></div>
+  <div class="card-body">
+    {% for target in p.STATUS_FLOW.get(p.status, ()) %}
+    <form method="post" action="{{ url_for('production.change_status', pid=p.id) }}"
+          class="d-inline">
+      {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="status" value="{{ target }}">
+      <button class="btn btn-sm {{ 'btn-success' if target == 40 else 'btn-outline-danger' if target == 50 else 'btn-outline-success' }}">
+        流转到「{{ PLANTING_STATUS[target][0] }}」
+      </button>
+    </form>
+    {% endfor %}
+    <div class="note mt-3" style="font-size:12.5px">
+      状态机定义在 <code>Planting.STATUS_FLOW</code>，
+      非法流转（如"已收获"退回"生长中"）会被服务层拒绝 ——
+      农事流程不可逆，退回去会让产量记录和批次状态不一致，后续统计口径全部错乱。
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card">
+      <div class="card-header">农事作业流水 <span class="sub">{{ logs | length }} 条</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:340px;overflow:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="sticky-top"><tr>
+            <th>日期</th><th>作业</th><th>描述</th>
+            <th class="num">人工(h)</th><th class="num">机械(h)</th>
+            <th class="num">费用</th><th>记录人</th>
+          </tr></thead>
+          <tbody>
+          {% for l in logs %}
+          <tr>
+            <td>{{ l.op_date }}</td>
+            <td><span class="badge-soft {{ 'green' if l.op_type == 60
+                else 'orange' if l.op_type == 20 else 'blue' }}">{{ l.op_name }}</span></td>
+            <td style="font-size:12.5px">{{ l.description }}</td>
+            <td class="num">{{ l.labor_hours | num(1) }}</td>
+            <td class="num">{{ l.machine_hours | num(1) }}</td>
+            <td class="num">{{ l.total_cost | num(0) }}</td>
+            <td style="font-size:12.5px">{{ l.operator.real_name if l.operator else '-' }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card">
+      <div class="card-header">农资投入 <span class="sub">{{ costs | length }} 条</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:340px;overflow:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="sticky-top"><tr>
+            <th>日期</th><th>类型</th><th>品名</th>
+            <th class="num">用量</th><th class="num">单价</th><th class="num">金额</th>
+          </tr></thead>
+          <tbody>
+          {% for c in costs %}
+          <tr>
+            <td>{{ c.record_date }}</td>
+            <td><span class="badge-soft gray">{{ c.type_name }}</span></td>
+            <td style="font-size:12.5px">{{ c.item_name }}</td>
+            <td class="num">{{ c.quantity | num(2) }} {{ c.unit }}</td>
+            <td class="num">{{ c.unit_price | num(2) }}</td>
+            <td class="num">{{ c.amount | num(2) }}</td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,215 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}① 有效积温 (GDD) 分析{% endblock %}
+
+{% block content %}
+{{ M.question('某批次的作物，在整个生育期里积累了多少有效积温？是否达到了该品种成熟所需？
+积温不足是北方农业最主要的减产因素 —— 霜冻来临前没成熟，产量和品质都会大幅下降。') }}
+
+{{ M.note('什么是有效积温（GDD）',
+ '日有效积温 = <code>max(0, (日最高温 + 日最低温) / 2 − 生物学零度)</code>；
+  生育期积温 = 逐日累加。<br>
+  <code>max(0, …)</code> <strong>不能省</strong>：低于生物学零度的日子不但不积累有效积温，
+  <strong>还不能倒扣</strong> —— 这是有效积温定义的核心。
+  生物学零度因作物而异（小麦 0℃、玉米 10℃、黄瓜 12℃），
+  所以它作为字段存在 <code>crop</code> 表里，而不是写死在代码中。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header">逐日有效积温累计曲线
+        {% if planting %}
+        <span class="sub">{{ planting.batch_no }} ·
+          {{ planting.plot.plot_no }} · {{ planting.crop.name }}
+          · 生物学零度 {{ planting.crop.base_temp }}℃</span>
+        {% endif %}
+      </div>
+      <div class="card-body">
+
+        {# 批次选择器：切换后重新请求本页 #}
+        <form class="row g-2 mb-3" method="get">
+          <div class="col-md-8">
+            <select name="planting_id" class="form-select form-select-sm"
+                    onchange="this.form.submit()">
+              {% for p in plantings %}
+              <option value="{{ p.id }}" {{ 'selected' if p.id == selected_id }}>
+                {{ p.batch_no }} — {{ p.plot.plot_no }} · {{ p.crop.name }}
+                · {{ p.season }} · {{ p.status_name }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4">
+            <button class="btn btn-sm btn-success w-100">切换批次</button>
+          </div>
+        </form>
+
+        <div id="gddChart" class="chart chart-lg"></div>
+
+        {% if gdd_info %}
+        {# ⚠️ 必须显式转 float：数据库取回的 DECIMAL 是 decimal.Decimal 对象，
+   Decimal 除以 float 会直接抛 TypeError（Decimal 只支持除以 int）。
+   这是 Jinja 模板里做数值计算最容易踩的坑。 #}
+{% set pct = (gdd_info.gdd_cum | float) / (planting.crop.gdd_maturity | float) * 100
+              if planting.crop.gdd_maturity else 0 %}
+        <div class="row g-2 mt-3 text-center">
+          <div class="col-3"><div class="kpi"><div class="label">累计有效积温</div>
+            <div class="value">{{ gdd_info.gdd_cum | num(0) }}<span class="unit">℃·d</span></div></div></div>
+          <div class="col-3"><div class="kpi"><div class="label">品种所需积温</div>
+            <div class="value">{{ planting.crop.gdd_maturity | num(0) }}<span class="unit">℃·d</span></div></div></div>
+          <div class="col-3"><div class="kpi"><div class="label">满足度</div>
+            <div class="value" style="color:{{ '#2e7d32' if pct >= 100 else '#ef6c00' if pct >= 90 else '#c62828' }}">
+              {{ pct | num(1) }}<span class="unit">%</span></div></div></div>
+          <div class="col-3"><div class="kpi"><div class="label">积温判定</div>
+            <div class="value" style="font-size:19px">
+              {{ '积温充足' if pct >= 100 else '基本满足' if pct >= 90 else '积温不足' }}
+            </div></div></div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">各批次积温满足度
+        <span class="sub">升序，积温不足的排最前</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:520px;overflow:auto">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="sticky-top"><tr>
+              <th>批次</th><th>作物</th><th class="num">积温</th>
+              <th class="num">满足度</th><th>判定</th>
+            </tr></thead>
+            <tbody>
+            {% for r in maturity_list %}
+            <tr>
+              <td style="font-size:11.5px">{{ r.batch_no }}</td>
+              <td>{{ r.crop_name }}</td>
+              <td class="num">{{ r.gdd_actual | num(0) }}</td>
+              <td class="num" style="color:{{ '#2e7d32' if r.maturity_pct >= 100
+                 else '#ef6c00' if r.maturity_pct >= 90 else '#c62828' }}">
+                {{ r.maturity_pct | num(1) }}%</td>
+              <td><span class="badge-soft {{ 'green' if r.gdd_status == '积温充足'
+                 else 'blue' if r.gdd_status == '基本满足'
+                 else 'orange' if r.gdd_status == '积温偏少' else 'red' }}">
+                {{ r.gdd_status }}</span></td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{{ M.sql_block(SQL.gdd_curve, '实际执行的 SQL —— 逐日累计（含批次切换）') }}
+
+{{ M.sql_block(SQL.gdd_maturity, '各批次积温满足度汇总（纯聚合，无需用户变量）') }}
+
+{{ M.note('核心写法：SUM() OVER (ORDER BY ...)',
+ '逐日累计在 8.0 里就是一行窗口函数。<br><br>
+  <strong>⚠️ 但帧必须显式写成 <code>ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW</code>。</strong><br>
+  窗口函数<strong>默认的帧是 RANGE</strong>，它会把 <code>ORDER BY</code> 值
+  <strong>相同的行算作同一帧</strong>。<br>
+  这里按 <code>obs_date</code> 排序、每天只有一行，所以 ROWS 和 RANGE 结果一样；
+  但如果按一个有重复值的列排序（比如按产量累计），RANGE 会把所有并列行一起包含进来，
+  累计值就会出现"跳变"。<br>
+  <strong>养成为累计求和显式写 ROWS 的习惯</strong> —— 它表达的才是"严格逐行累加"。') }}
+
+{{ M.gotcha('这个差异有多真实？',
+ '本项目的造数数据里恰好没有并列产量，所以两种帧结果相同 ——
+  但这不代表可以省略 ROWS。<code>sql/05_tests.sql</code> 的断言 11
+  专门检测了这一点，并注明"当前数据不暴露差异，但代码仍应显式写 ROWS 以防数据变化"。<br>
+  <strong>写测试时如实报告"这条断言现在测不出问题"，比假装它一直在保护你更专业。</strong>') }}
+
+{{ M.note('第二条 SQL 为什么不用窗口函数',
+ '汇总"整个生育期的总积温"只需要 <code>SUM()</code> + <code>GROUP BY</code>，纯聚合就能做。<br>
+ <strong>能用简单聚合时不要硬套窗口函数</strong> —— 判断力本身比技巧更值钱。
+ 迁移到 8.0 之后把每个聚合都改成 <code>OVER (...)</code> 是典型的过度改造。') }}
+
+{{ M.legacy57('
+<strong>5.7 没有窗口函数，逐日累计只能用用户变量：</strong>
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">SET @gdd := 0, @pid := NULL;
+
+SELECT t.obs_date, t.gdd_daily,
+       @gdd := IF(@pid = t.planting_id, @gdd + t.gdd_daily, t.gdd_daily) AS gdd_cum,
+       @pid := t.planting_id AS _pid_guard      -- ← 漏了这行，累计直接失效
+FROM (
+    SELECT p.id AS planting_id, w.obs_date,
+           GREATEST(0, (w.temp_max + w.temp_min)/2 - c.base_temp) AS gdd_daily
+    FROM planting p
+    JOIN plot pl ON pl.id = p.plot_id
+    JOIN farm f  ON f.id  = pl.farm_id
+    JOIN crop c  ON c.id  = p.crop_id
+    JOIN weather_daily w ON w.region_code = f.region_code
+                        AND w.obs_date BETWEEN p.sow_date AND p.mature_date
+    WHERE p.id = 1
+    ORDER BY w.obs_date
+    LIMIT 18446744073709551615          -- ← 强制物化，见下
+) t
+CROSS JOIN (SELECT @gdd := 0, @pid := NULL) init;</pre>
+<strong>三个必须同时满足的条件</strong>（缺一个结果就静默错乱）：<br>
+① <code>@pid := t.planting_id</code> 必须存在且在累加行之后 —— 它记住当前行的分组值供下一行比较。
+   漏掉它，<code>@pid</code> 恒为 NULL，"累计值"退化成"当日值"。<br>
+② <code>LIMIT 18446744073709551615</code> 强制派生表物化，防止 <code>derived_merge</code>
+   把 <code>ORDER BY</code> 合并掉。<br>
+③ 派生表内必须 <code>ORDER BY</code> 日期。<br><br>
+<strong>本项目真踩过①</strong>：移植时漏抄那行，GDD 曲线末行显示 13.15，
+而真实累计值是 1138.61 —— 不报错、不崩溃，只是结果全错。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CURVE = {{ curve | tojson }};
+const MATURITY = {{ (planting.crop.gdd_maturity | float) if planting else 0 }};
+
+if (CURVE.length) {
+    /* 标记线：品种所需积温。
+       用一个 markLine 直接标在累计曲线上，比在旁边写"所需 1320"
+       直观得多 —— 曲线越过那条线就代表达到成熟所需积温。 */
+    const mark = MATURITY > 0 ? {
+        silent: true,
+        symbol: 'none',
+        lineStyle: { color: '#c62828', type: 'dashed', width: 1.6 },
+        label: {
+            formatter: '所需积温 ' + fmt.num(MATURITY, 0),
+            position: 'insideEndTop', fontSize: 11, color: '#c62828'
+        },
+        data: [{ yAxis: MATURITY }]
+    } : undefined;
+
+    initChart('gddChart', chartOpt({
+        grid: { left: 66, right: 40, top: 44, bottom: 46, containLabel: true },
+        tooltip: {
+            trigger: 'axis',
+            formatter: p => {
+                const i = p[0].dataIndex;
+                return `${CURVE[i].obs_date}<br/>
+                        当日积温 <b>${fmt.num(CURVE[i].gdd_daily, 1)}</b> ℃·d<br/>
+                        累计 <b>${fmt.num(CURVE[i].gdd_cum, 1)}</b> ℃·d`;
+            }
+        },
+        legend: { data: ['日有效积温', '累计有效积温'], top: 4 },
+        xAxis: Object.assign(axisStyle(), {
+            data: CURVE.map(d => d.obs_date),
+            axisLabel: { color: AGRI.gray, fontSize: 10,
+                         formatter: v => v.slice(5) }
+        }),
+        yAxis: [valueAxis('℃·d'), Object.assign(valueAxis('累计'), { splitLine: { show: false } })],
+        dataZoom: [{ type: 'inside' }, { type: 'slider', height: 16, bottom: 8 }],
+        series: [
+            { name: '日有效积温', type: 'bar', barMaxWidth: 4,
+              itemStyle: { color: '#c8e6c9' }, data: CURVE.map(d => d.gdd_daily) },
+            { name: '累计有效积温', type: 'line', yAxisIndex: 1, smooth: true,
+              symbol: 'none', lineStyle: { width: 2.6, color: '#2e7d32' },
+              areaStyle: { color: 'rgba(46,125,50,.10)' },
+              markLine: mark,
+              data: CURVE.map(d => d.gdd_cum) }
+        ]
+    }));
+}
+</script>
+{% endblock %}

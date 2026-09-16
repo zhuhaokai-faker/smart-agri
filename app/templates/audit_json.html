@@ -1,0 +1,164 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}字段级变更分析 · JSON_TABLE{% endblock %}
+
+{% block content %}
+{{ M.question('这次修改到底动了哪几个字段？每个字段从什么变成了什么？
+哪些字段最常被改？—— 审计日志里存的是 JSON，5.7 时代这些问题没法用 SQL 回答。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4">
+    <div class="kpi">
+      <div class="label"><i class="bi bi-journal-text"></i>审计记录总数</div>
+      <div class="value">{{ stats.total }}<span class="unit">条</span></div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="kpi">
+      <div class="label"><i class="bi bi-braces"></i>detail 是合法 JSON</div>
+      <div class="value">{{ stats.parseable }}<span class="unit">条</span></div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="kpi">
+      <div class="label"><i class="bi bi-arrow-left-right"></i>含 before 快照（可做字段级对比）</div>
+      <div class="value">{{ stats.has_before }}<span class="unit">条</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header">最常被修改的字段
+        <span class="sub">这是 5.7 时代做不到的分析</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:420px;overflow:auto">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="sticky-top"><tr>
+              <th>目标表</th><th>字段</th>
+              <th class="num">修改次数</th><th class="num">表内排名</th>
+              <th class="num">占比</th><th style="width:120px">分布</th>
+            </tr></thead>
+            <tbody>
+            {% for r in hot_fields %}
+            <tr>
+              <td><span class="badge-soft gray">{{ r.target_table }}</span></td>
+              <td><code style="font-size:12px">{{ r.field_name }}</code></td>
+              <td class="num"><strong>{{ r.change_cnt }}</strong></td>
+              <td class="num">
+                <span class="badge-soft {{ 'green' if r.rank_in_table == 1 else 'blue' }}">
+                  No.{{ r.rank_in_table }}</span></td>
+              <td class="num">{{ r.pct | num(1) }}%</td>
+              <td>
+                {# 用一条细进度条表达占比，比只写数字更快看出量级差异 #}
+                <div class="progress" style="height:7px">
+                  <div class="progress-bar bg-success" style="width:{{ r.pct }}%"></div>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">这个分析说明了什么</div>
+      <div class="card-body">
+        <div class="note mb-3" style="font-size:13px">
+          <h6><i class="bi bi-lightbulb"></i> 业务价值</h6>
+          某个字段被<strong>频繁修改</strong>，往往说明录入环节或业务规则有问题：<br>
+          · <code>remark</code> 改得多 → 可能是备注不是必填，事后才补<br>
+          · <code>area_mu</code> 改得多 → 可能是地块测量不准，事后修正<br>
+          · <code>status</code> 改得多 → 状态流转频繁，要看是否有误操作
+        </div>
+        <div class="note warn" style="font-size:13px">
+          <h6><i class="bi bi-exclamation-triangle"></i> 技术前提</h6>
+          这条分析在 5.7 上<strong>根本写不出来</strong> ——
+          它需要先把 JSON 里的键<strong>展开成行</strong>，才能 <code>GROUP BY</code> 计数。
+          而 5.7 没有 <code>JSON_TABLE</code>。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% call M.table_wrap('字段级变更明细', '每一行 = 某次修改中某个字段的变化', 460) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>日志ID</th><th>时间</th><th>操作人</th><th>动作</th>
+    <th>目标</th><th>字段</th><th>变更前</th><th>变更后</th><th>判定</th>
+  </tr></thead>
+  <tbody>
+  {% for r in changes %}
+  <tr>
+    <td class="num">#{{ r.log_id }}</td>
+    <td style="font-size:12px">{{ r.created_at.strftime('%m-%d %H:%M:%S') }}</td>
+    <td style="font-size:12.5px">{{ r.operator or '系统' }}</td>
+    <td><span class="badge-soft {{ 'green' if r.action == 'CREATE'
+        else 'blue' if r.action == 'UPDATE' else 'orange' }}">{{ r.action }}</span></td>
+    <td style="font-size:12px">{{ r.target_table }}#{{ r.target_id or '-' }}</td>
+    <td><code style="font-size:11.5px">{{ r.field_name }}</code></td>
+    <td class="text-muted" style="font-size:12.5px">{{ r.old_value or '—' }}</td>
+    <td style="font-size:12.5px"><strong>{{ r.new_value or '—' }}</strong></td>
+    <td><span class="badge-soft {{ 'gray' if r.really_changed == '未变化' else 'orange' }}">
+      {{ r.really_changed }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.audit_field_changes, '实际执行的 SQL —— 用 JSON_TABLE 把变更快照展开成行') }}
+
+{{ M.sql_block(SQL.audit_hot_fields, '统计最常被修改的字段（CTE + 窗口函数）') }}
+
+{{ M.note('核心思路：动态键名怎么展开成行',
+ '难点在于 <code>detail</code> 里的字段名是<strong>动态的</strong>
+ （改地块是 name/area_mu，改批次是 status），不可能写死路径。<br><br>
+ 解法分三步：<br>
+ ① <code>JSON_KEYS(detail, \'$.before\')</code> 拿到这次修改涉及的所有字段名，
+    得到一个 JSON 数组 <code>["area_mu","fertility_level",...]</code><br>
+ ② <code>JSON_TABLE</code> 把这个数组展开成 N 行（每行一个字段名）<br>
+ ③ 再用 <code>CONCAT</code> 拼出 <code>\'$.before.&lt;字段名&gt;\'</code> 的路径逐个取值<br><br>
+ 这是 <code>JSON_TABLE</code> 最典型的用法：<strong>动态键名的横向展开</strong>。') }}
+
+{{ M.gotcha('实测踩到的限制：->> 的路径必须是字符串字面量',
+ '下面这样写会直接<strong>语法报错</strong>（ERROR 1064）：<br>
+ <code style="background:#ffeed8;color:#b34700">a.detail ->> CONCAT(\'$.before.\', jt.field_name)</code><br><br>
+ 因为这里的路径是<strong>动态拼接</strong>出来的（字段名来自 JSON_KEYS），
+ 所以必须退回完整写法：<br>
+ <code style="background:#e8f0e9;color:#1b5e20">JSON_UNQUOTE(JSON_EXTRACT(a.detail, CONCAT(\'$.before.\', jt.field_name)))</code><br><br>
+ <code>->></code> 只是"路径已知且为常量"时的语法糖，不是通用替代 ——
+ 这一点在官方文档里没有明说，是实际试出来的。') }}
+
+{{ M.note('5.7 时代这件事只能怎么做',
+ '<strong>方案 A：整块读到应用层解析。</strong><br>
+ 把 <code>detail</code> 原样查出来，用 Python 解析 JSON 再处理。
+ 代价是<strong>失去了在数据库里做聚合、排序、分页的能力</strong> ——
+ 所有审计记录都要先拉到内存里。<br><br>
+ <strong>方案 B：提前把关键字段抽成独立列。</strong><br>
+ 本项目在 5.7 时代用的就是这个：用一个 STORED 生成列
+ <code>changed_fields</code> 把"被修改的字段列表"从 JSON 里抽出来并建索引。<br>
+ 但它<strong>只能做"是否包含某个字段"的模糊匹配</strong>，
+ 无法做字段级的值比较（"从 210.5 变成了 260"）。<br><br>
+ <strong>8.0 的 JSON_TABLE 让 JSON 从"只能读不能查"变成了"可分析的数据资产"。</strong>') }}
+
+{{ M.gotcha('但有一条设计原则没有变',
+ '<code>JSON_TABLE</code> 是<strong>运行时展开</strong>，
+ 每次查询都要解析 JSON，<strong>无法建立索引</strong>。所以：<br>
+ · 需要<strong>高频过滤/排序</strong>的字段，仍然应该抽成独立列（甚至生成列）<br>
+ · <code>JSON_TABLE</code> 适合"偶尔做一次的分析型查询"，不适合高频点查<br><br>
+ 换句话说：<strong>JSON_TABLE 让 JSON 变得可查了，但没有让它变得高效。</strong>
+ 别因为有了它就把所有字段都塞进 JSON ——
+ 那是把"能查"当成了"该查"。') }}
+
+<p class="mb-0">
+  <a href="{{ url_for('audit.index') }}" class="btn btn-sm btn-outline-secondary">
+    <i class="bi bi-arrow-left"></i> 返回原始日志列表</a>
+</p>
+{% endblock %}

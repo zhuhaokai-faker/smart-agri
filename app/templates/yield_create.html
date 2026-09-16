@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+{% block page_title %}录入产量{% endblock %}
+{% block content %}
+<div class="row"><div class="col-lg-8">
+  <div class="card">
+    <div class="card-header">录入产量记录
+      <span class="sub">只列出"已收获但尚未录入产量"的批次</span></div>
+    <div class="card-body">
+      {% if not pending %}
+      <div class="alert alert-info mb-0">
+        没有待录入的批次 —— 所有已收获的批次都已有产量记录。
+      </div>
+      {% else %}
+      <form method="post">
+        {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label">种植批次 <span class="text-danger">*</span></label>
+            <select name="planting_id" id="pidSel" class="form-select" required
+                    onchange="fillDefaults()">
+              <option value="">— 请选择 —</option>
+              {% for p in pending %}
+              <option value="{{ p.id }}"
+                      data-area="{{ p.plant_area_mu }}"
+                      data-date="{{ p.harvest_date }}">
+                {{ p.batch_no }} — {{ p.plot.plot_no }} · {{ p.crop.name }}
+                · 收获 {{ p.harvest_date }} · {{ p.plant_area_mu }} 亩
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {# 收获日期只读展示，不给输入框：它以**批次记录**为唯一来源。
+             允许这里另填一个日期，就会出现同一次收获有两个日期，
+             而且两处不一致不会报错，只会让产量记录和批次对不上。 #}
+          <div class="col-md-4">
+            <label class="form-label">收获日期</label>
+            <input type="text" id="hdate" class="form-control" value="" disabled>
+            <div class="form-text">跟随所选批次，不可修改</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">收获面积（亩）<span class="text-danger">*</span></label>
+            <input type="number" step="0.01" name="harvest_area_mu" id="harea"
+                   class="form-control" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">总产量（kg）<span class="text-danger">*</span></label>
+            <input type="number" step="0.01" name="yield_kg" class="form-control" required>
+            <div class="form-text">单产 = 总产量 ÷ 收获面积（数据库自动算）</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">等级</label>
+            <select name="grade" class="form-select">
+              <option value="1">一级</option><option value="2" selected>二级</option>
+              <option value="3">三级</option>
+            </select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">销售单价（元/kg）</label>
+            <input type="number" step="0.0001" name="unit_price" class="form-control" value="0">
+            <div class="form-text">产值 = 总产量 × 单价（数据库自动算）</div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">含水率（%）</label>
+            <input type="number" step="0.01" name="moisture_content"
+                   class="form-control" value="0">
+          </div>
+          <div class="col-12">
+            <label class="form-label">品质说明</label>
+            <input type="text" name="quality_note" class="form-control" maxlength="255">
+          </div>
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-success">提交</button>
+          <a href="{{ url_for('production.yield_list') }}" class="btn btn-outline-secondary">取消</a>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="col-lg-4">
+  <div class="note">
+    <h6><i class="bi bi-shield-check"></i> 服务端校验</h6>
+    这个表单的提交会经过服务层校验，不只是前端 required：<br>
+    · 批次是否已有产量记录（<code>uk_planting</code> 唯一约束 + 业务判断）<br>
+    · 产量、面积、单价、含水率必须为正数<br>
+    · 收获面积不能超过地块总面积<br>
+    · <strong>收获日期以批次的收获日为准</strong>，不接受表单值 ——
+    同一次收获只应该有一个日期。要改收获日，去改批次本身<br><br>
+    <strong>前端的 required 只是体验优化，不是安全边界</strong> ——
+    绕过 HTML 直接 POST 是几秒钟的事。
+  </div>
+</div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+/* 选中批次后自动带出种植面积和收获日期，减少手工输入出错。
+   注意这两个的用途不同：
+     · harea（收获面积）带出来的是**可改的**建议值，服务端会独立校验一遍；
+     · hdate（收获日期）只是**展示** —— 它是 disabled 的，不会被提交，
+       真正的值由服务端从批次记录上取，避免两处日期各说各话。 */
+function fillDefaults() {
+    const sel = document.getElementById('pidSel');
+    const opt = sel.options[sel.selectedIndex];
+    if (!opt || !opt.dataset.area) return;
+    document.getElementById('harea').value = opt.dataset.area;
+    document.getElementById('hdate').value = opt.dataset.date || '';
+}
+</script>
+{% endblock %}

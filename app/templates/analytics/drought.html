@@ -1,0 +1,176 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}⑧ 连续干旱预警{% endblock %}
+
+{% block content %}
+{{ M.question('每个气象区历史上持续最久的干旱过程是哪几次？发生在生长季的哪一段？
+对雨养农业来说，连续无降水天数是直接的减产威胁。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">各气象区最长连续干旱过程
+        <span class="sub">红色=夏季生长关键期（影响最大）</span></div>
+      <div class="card-body">
+        <form class="row g-2 mb-3" method="get" style="max-width:340px">
+          <div class="col-7">
+            <select name="min_days" class="form-select form-select-sm" onchange="this.form.submit()">
+              {% for k in [5, 10, 15, 20, 30] %}
+              <option value="{{ k }}" {{ 'selected' if k == min_days }}>
+                持续 ≥ {{ k }} 天的干旱</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-5"><button class="btn btn-sm btn-success w-100">应用</button></div>
+        </form>
+        <div id="droughtChart" class="chart chart-lg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% call M.table_wrap('干旱事件明细', '', 420) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>气象区</th><th>开始</th><th>结束</th>
+    <th class="num">持续天数</th><th class="num">期间均温(℃)</th><th>影响季节</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.region_code }}</td>
+    <td>{{ r.start_date }}</td>
+    <td>{{ r.end_date }}</td>
+    <td class="num">
+      <span class="badge-soft {{ 'red' if r.dry_days >= 40
+          else 'orange' if r.dry_days >= 25 else 'gray' }}">
+        {{ r.dry_days }} 天</span></td>
+    <td class="num">{{ r.avg_temp | num(1) }}</td>
+    <td>
+      <span class="badge-soft {{ 'red' if '夏季' in r.impact_season
+          else 'orange' if '春季' in r.impact_season
+          else 'blue' if '秋季' in r.impact_season else 'gray' }}">
+        {{ r.impact_season }}</span>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.drought, '实际执行的 SQL —— gaps-and-islands 算法') }}
+
+{{ M.note('算法原理：为什么"日期 − 行号"能识别连续段',
+ '把日期转成线性天数 <code>TO_DAYS(obs_date)</code>，减去"连续段内行号"：<br><br>
+ <code>TO_DAYS(obs_date) − ROW_NUMBER() OVER (PARTITION BY region_code ORDER BY obs_date)</code><br><br>
+ · 在<strong>同一个连续段内</strong>：日期每行 +1，行号也每行 +1 → <strong>差值恒定</strong><br>
+ · 在<strong>段与段之间</strong>：日期跳变但行号重置 → <strong>差值改变</strong><br><br>
+ 于是这个"差值"就成了每个连续段的唯一标识，
+ <code>GROUP BY 差值</code> 就能得到每段的起止日期和长度。') }}
+
+{{ M.note('⚠️ 领域知识对 SQL 的修正：必须排除冬季',
+ '最初这条查询没有温度条件，结果黑龙江查出来的"最长干旱"是
+ <strong>1~2 月的 53 天，期间均温 −14.9℃</strong>。<br><br>
+ <strong>那不是旱情，是冬季封冻</strong> —— 东北的冬天本来就几乎不降水，
+ 而且作物根本不处于生长状态。<br><br>
+ 加上 <code>AND temp_avg >= 5</code>（作物生物学零度以上的近似值）之后，
+ 查出来的全部是春夏生长季的干旱过程，才真正有预警价值。<br><br>
+ <strong>农业干旱的定义前提是"作物处于生长状态且水分亏缺"</strong> ——
+ 这是纯技术视角想不到的一层，必须靠领域知识补上。', warn=true) }}
+
+{{ M.note('第二个坑：日期必须转成线性数值',
+ '不能把年月编码成 <code>202412</code> 这种形式再相减 ——
+ 2024 年 12 月的下一个是 <code>202501</code>，差 <strong>89 而不是 1</strong>，
+ 连续段会被凭空切断。<br>
+ <code>TO_DAYS()</code> 返回自公元 0 年以来的天数，天然线性递增，跨年完全正确。') }}
+
+{{ M.note('8.0 用 ROW_NUMBER() 消除了一整类错误',
+ '5.7 版这条查询需要两个用户变量：<br>
+ <code>@rn8 := IF(@grp8 = region_code, @rn8 + 1, 1)</code> 算行号，<br>
+ <code>@grp8 := region_code</code> <strong>记住上一行的分组值</strong>。<br><br>
+ 第二行<strong>绝对不能省</strong>，而且必须写在第一行之后 ——
+ 漏掉它，行号每行都重置，所有"连续段"变成单天，
+ 这条查询会返回 <strong>0 行结果</strong>，且不报任何错。
+ <strong>本项目实际踩过这个坑。</strong><br><br>
+ 而 <code>ROW_NUMBER() OVER (PARTITION BY region_code ORDER BY obs_date)</code>
+ <strong>自带分区语义</strong> —— 结构上不可能漏写"记住上一行分组"的赋值。
+ 这类错误的消失不是"代码变短了"，而是<strong>错误变得不可表达了</strong>。') }}
+
+{{ M.legacy57('
+<strong>5.7 的用户变量版本：</strong>
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">SET @rn8 := 0, @grp8 := NULL;
+
+SELECT g.region_code, MIN(g.obs_date) AS start_date, MAX(g.obs_date) AS end_date,
+       COUNT(*) AS dry_days
+FROM (
+    SELECT t.region_code, t.obs_date,
+           TO_DAYS(t.obs_date)
+             - (@rn8 := IF(@grp8 = t.region_code, @rn8 + 1, 1)) AS island,
+           @grp8 := t.region_code AS _grp_guard     -- ← 漏了这行，查询返回 0 行
+    FROM (
+        SELECT region_code, obs_date, temp_avg
+        FROM weather_daily
+        WHERE precipitation &lt; 1.0 AND temp_avg &gt;= 5.0
+        ORDER BY region_code, obs_date
+        LIMIT 18446744073709551615              -- ← 强制物化
+    ) t
+    CROSS JOIN (SELECT @rn8 := 0, @grp8 := NULL) init
+) g
+GROUP BY g.region_code, g.island
+HAVING COUNT(*) &gt;= 12;</pre>
+三个约束（和分组 TopN 是同一套）：<br>
+① 必须写 <code>@grp8 := region_code</code> 记住上一行分组；<br>
+② 必须加 <code>LIMIT 18446744073709551615</code> 强制物化，防止 <code>derived_merge</code>
+   吃掉 <code>ORDER BY</code>；<br>
+③ 派生表内必须 <code>ORDER BY</code>。<br><br>
+<strong>算法本身的洞察（"日期 − 行号 = 连续段标识"）两个版本是一样的</strong> ——
+变的只是"怎么给行编号"。5.7 靠用户变量手工编号（易错），
+8.0 靠 <code>ROW_NUMBER()</code> 声明式编号（不易错）。<br><br>
+⚠️ 但有一个坑<strong>两个版本都有</strong>、且只能靠领域知识解决：
+   <code>temp_avg &gt;= 5.0</code> 这个温度条件 —— 见页面上的说明。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ROWS  = {{ rows | tojson }};
+const MIN_D = {{ min_days }};
+
+if (ROWS.length) {
+    ROWS.sort((a, b) => a.dry_days - b.dry_days);
+    initChart('droughtChart', chartOpt({
+        grid: { left: 100, right: 76, top: 20, bottom: 34, containLabel: true },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+            formatter: p => {
+                const r = ROWS[p[0].dataIndex];
+                return `${r.region_code}<br/>
+                        ${r.start_date} ~ ${r.end_date}<br/>
+                        持续 <b>${r.dry_days}</b> 天，均温 ${r.avg_temp}℃<br/>
+                        ${r.impact_season}`;
+            }
+        },
+        xAxis: valueAxis('持续天数'),
+        yAxis: Object.assign(axisStyle(), {
+            data: ROWS.map(d => `${d.region_code} ${d.start_date.slice(0, 7)}`),
+            axisLabel: { fontSize: 10, color: AGRI.gray }
+        }),
+        series: [{
+            type: 'bar', barMaxWidth: 11,
+            /* 按影响季节着色：夏季生长关键期的干旱最危险，用最深红；
+               冬季虽然排除了，但保留灰色分支以防其他季节。 */
+            data: ROWS.map(d => ({
+                value: d.dry_days,
+                itemStyle: {
+                    color: d.impact_season.includes('夏季') ? '#c62828'
+                         : d.impact_season.includes('春季') ? '#ef6c00'
+                         : d.impact_season.includes('秋季') ? '#fbc02d' : '#9e9e9e',
+                    borderRadius: [0, 3, 3, 0]
+                }
+            })),
+            label: { show: true, position: 'right', fontSize: 10,
+                     formatter: '{c} 天', color: AGRI.gray }
+        }]
+    }));
+}
+</script>
+{% endblock %}

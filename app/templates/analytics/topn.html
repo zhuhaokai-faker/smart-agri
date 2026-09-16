@@ -1,0 +1,157 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}⑤ 分组排行榜（分组 Top N）{% endblock %}
+
+{% block content %}
+{{ M.question('每个作物单产最高的前几块地是哪些？它们的共同点是什么（地力等级、所属农场）？
+这直接对应"高分地块的经验能不能复制到其他地块"。') }}
+
+<div class="card mb-3">
+  <div class="card-header">各作物单产前 {{ top_n }} 地块
+    <span class="sub">ROW_NUMBER() OVER (PARTITION BY crop_id ORDER BY yield_per_mu DESC)</span></div>
+  <div class="card-body">
+    <form class="row g-2 mb-3" method="get" style="max-width:340px">
+      <div class="col-7">
+        <select name="n" class="form-select form-select-sm" onchange="this.form.submit()">
+          {% for k in [1,2,3,5,8,10] %}
+          <option value="{{ k }}" {{ 'selected' if k == top_n }}>每组取前 {{ k }} 名</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-5"><button class="btn btn-sm btn-success w-100">应用</button></div>
+    </form>
+    <div id="topnChart" class="chart" style="height:{{ [320, 420] | max }}px"></div>
+  </div>
+</div>
+
+{% call M.table_wrap('排行榜明细', '', 420) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>作物</th><th class="num">排名</th><th>地块</th><th>农场</th>
+    <th>地力等级</th><th class="num">单产(kg/亩)</th>
+    <th class="num">收获次数</th><th class="num">累计面积(亩)</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.crop_name }}</td>
+    <td class="num">
+      <span class="badge-soft {{ 'green' if r.rn == 1 else 'blue' if r.rn == 2 else 'gray' }}">
+        No.{{ r.rn }}</span></td>
+    <td>{{ r.plot_no }}</td>
+    <td style="font-size:12px">{{ r.farm_name }}</td>
+    <td><span class="badge-soft {{ 'green' if r.fertility_name == '优'
+        else 'blue' if r.fertility_name == '中' else 'orange' }}">{{ r.fertility_name }}</span></td>
+    <td class="num"><strong>{{ r.yield_per_mu | num(1) }}</strong></td>
+    <td class="num">{{ r.record_cnt }}</td>
+    <td class="num">{{ r.total_area_mu | num(1) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.topn, '实际执行的 SQL —— ROW_NUMBER() OVER (PARTITION BY crop_id ORDER BY ...)') }}
+
+{{ M.note('核心写法：ROW_NUMBER() OVER (PARTITION BY ...)',
+ '分组取前 N 在 8.0 里就是一行窗口函数。<br><br>
+ <strong>⚠️ 但窗口函数<u>没有</u>替你解决破平局问题。</strong><br>
+ 若 <code>ORDER BY yield_per_mu DESC</code> 里有两行单产相同，
+ <code>ROW_NUMBER()</code> 给出的先后顺序依赖执行计划，两次执行可能不同 ——
+ 也就是说 Top3 的名单可能不稳定。<br>
+ 所以末尾的 <code>plot_no</code> 第二排序键<strong>仍然必须写</strong>。<br><br>
+ <strong>窗口函数不改变数据本身的模糊性</strong>，它只是换了一种表达方式。
+ 这一点很容易被忽略：以为用了窗口函数就"标准、正确"了。', warn=true) }}
+
+{{ M.note('顺带演示：RANK / DENSE_RANK / ROW_NUMBER 的区别',
+ '这是面试高频考点，三者对并列值的处理完全不同：<br>
+ <code>ROW_NUMBER()</code> &nbsp;1 2 3 4 &nbsp;— 并列也强行排出先后（必定唯一）<br>
+ <code>RANK()</code> &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;1 2 2 4 &nbsp;— 并列同名次，后续名次<strong>跳过</strong><br>
+ <code>DENSE_RANK()</code> &nbsp;1 2 2 3 &nbsp;— 并列同名次，后续名次<strong>不跳过</strong><br><br>
+ 业务含义也不一样：<br>
+ · <code>ROW_NUMBER</code> → "每组只能取 N 个名额"（推荐 Top3 地块）<br>
+ · <code>RANK</code> → "排名第几"（并列第 2，下一个是第 4）<br>
+ · <code>DENSE_RANK</code> → "分几档"（并列第 2，下一个是第 3）<br><br>
+ 页面下方有这三个函数的实测对比表。') }}
+
+{{ M.legacy57('
+<strong>5.7 没有窗口函数，只能用用户变量模拟"分组内行号"：</strong>
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">SET @rn := 0, @grp := NULL;
+
+SELECT x.crop_name, x.plot_no, x.yield_per_mu, x.rn
+FROM (
+    SELECT s.crop_name, s.plot_no, s.yield_per_mu,
+           @rn  := IF(@grp = s.crop_id, @rn + 1, 1) AS rn,
+           @grp := s.crop_id                        AS _grp_guard
+    FROM (
+        SELECT crop_id, crop_name, plot_no, yield_per_mu
+        FROM v_plot_yield_summary
+        ORDER BY crop_id ASC, yield_per_mu DESC, plot_no ASC
+        LIMIT 18446744073709551615          -- ← 强制物化，见下
+    ) s
+    CROSS JOIN (SELECT @rn := 0, @grp := NULL) init
+) x
+WHERE x.rn &lt;= 3;</pre>
+<strong>三行代码，三个必须同时满足的约束</strong>（缺一个结果就静默错乱）：<br>
+① <code>@grp := s.crop_id</code> 这行<strong>必须存在</strong>，且必须在
+   <code>@rn</code> 赋值<strong>之后</strong> —— 它负责把当前行的分组值记下来供下一行比较。
+   漏掉它，<code>@grp</code> 恒为 NULL，IF 永远走 else 分支，行号每行重置为 1，
+   <strong>所有分组全部失效</strong>，而查询不报任何错。<br>
+② <code>LIMIT 18446744073709551615</code> 强制派生表物化 ——
+   <code>derived_merge=on</code> 时，没有这个"无限大 LIMIT"，
+   派生表会被合并进外层，<code>ORDER BY</code> 随之被丢弃，
+   而行号计算完全依赖行按特定顺序流过。<br>
+③ 派生表内必须 <code>ORDER BY</code>。<br><br>
+<strong>本项目真的踩过①这个坑</strong>：把 SQL 从 .sql 文件移植到服务层时漏抄了那行，
+结果"连续干旱天数"全部变成 1 天、积温累计退化成当日值。
+这也是 <code>scripts/verify.py</code> 里那组"服务层断言"存在的原因。<br><br>
+<strong>8.0 的窗口函数把这一整类坑都消除了</strong> —— 但只有见过 5.7 的写法，
+才知道它替你消除了什么。') }}
+
+{{ M.note('第二种解法：确定性实现',
+ '页面下方还跑了一遍<strong>完全不同思路</strong>的版本（相关子查询）：
+ "比我强的同类地块少于 3 个 → 我进前三"。<br>
+ 它 O(n²) 慢得多，但<strong>结果永远正确</strong>，不依赖任何优化器行为。<br><br>
+ 两种实现的结果已在 <code>verify.py</code> 里逐行比对 ——
+ <strong>36 行完全相同</strong>。面试时把两版都讲出来
+ （快的 + 一定对的，以及怎么验证它们一致），比只会一种强得多。') }}
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ROWS = {{ rows | tojson }};
+const CROPS = [...new Set(ROWS.map(d => d.crop_name))];
+const SERIES_MAX = Math.max(...CROPS.map(c => ROWS.filter(r => r.crop_name === c).length));
+
+initChart('topnChart', chartOpt({
+    grid: { left: 96, right: 62, top: 34, bottom: 24, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: p => {
+            const r = ROWS.find(x => x.plot_no === p[0].name);
+            if (!r) return '';
+            return `${r.plot_no}（${r.crop_name}）<br/>
+                    单产 <b>${fmt.num(r.yield_per_mu, 1)}</b> kg/亩<br/>
+                    地力 ${r.fertility_name} · 收获 ${r.record_cnt} 次`;
+        }
+    },
+    legend: { data: CROPS.map((c, i) => '第' + (i + 1) + '名').slice(0, SERIES_MAX), top: 0 },
+    xAxis: valueAxis('单产 (kg/亩)'),
+    yAxis: Object.assign(axisStyle(), {
+        data: ROWS.map(d => d.plot_no + ' ' + d.crop_name)
+    }),
+    series: [{
+        type: 'bar', barMaxWidth: 13,
+        /* 用深浅区分名次：第 1 名最深。
+           名次本身是有序的，用同色系深浅表达最自然。 */
+        itemStyle: {
+            color: p => ['#1b5e20', '#43a047', '#81c784', '#a5d6a7',
+                         '#c8e6c9', '#dcedc8', '#e8f5e9', '#f1f8e9',
+                         '#f9fbe7', '#fdfef5'][p.dataIndex % 10]
+        },
+        label: { show: true, position: 'right', fontSize: 10,
+                 formatter: p => fmt.num(p.value, 0) },
+        data: ROWS.map(d => d.yield_per_mu)
+    }]
+}));
+</script>
+{% endblock %}

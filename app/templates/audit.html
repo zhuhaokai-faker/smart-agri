@@ -1,0 +1,76 @@
+{% extends 'base.html' %}
+{% from '_pager.html' import pager %}
+{% block page_title %}操作审计{% endblock %}
+{% block content %}
+<div class="note mb-3">
+  <h6><i class="bi bi-journal-text"></i> 审计日志只增不改</h6>
+  日志一旦允许修改就失去了证据价值 —— 改日志的人恰恰可能是要掩盖问题的人。
+  生产环境还应通过<strong>数据库权限</strong>禁止对该表 UPDATE / DELETE。<br>
+  变更详情存在 <code>JSON</code> 列里。<strong>5.7 能用 JSON 存、不能把 JSON 展开成行</strong>
+  （没有 <code>JSON_TABLE</code>），所以设计原则是：
+  JSON 只当<strong>不可查询的附件</strong>，需要检索的字段必须抽成独立列 ——
+  本项目用 STORED 生成列把"被修改的字段列表"抽出来建索引。
+</div>
+
+<div class="alert alert-success d-flex align-items-center py-2 mb-3"
+     style="background:#eef7ef;border-color:#cfe6d2;font-size:13px">
+  <i class="bi bi-braces me-2" style="color:#2e7d32"></i>
+  <div>
+    <strong>MySQL 8.0 独有：字段级变更分析</strong> ——
+    用 <code>JSON_TABLE</code> 把下面的 JSON 快照展开成行，
+    可以直接回答"这次修改动了哪几个字段、各自的旧值新值是什么"。
+  </div>
+  <a href="{{ url_for('audit.json_table') }}" class="btn btn-sm btn-success ms-auto">
+    去看字段级分析 <i class="bi bi-arrow-right"></i></a>
+</div>
+
+<div class="card">
+  <div class="card-header d-flex align-items-center flex-wrap gap-2">
+    <span>操作日志 <span class="sub">{{ pagination.total }} 条</span></span>
+    <form class="ms-auto" method="get">
+      <select name="action" class="form-select form-select-sm" style="width:150px"
+              onchange="this.form.submit()">
+        <option value="">全部动作</option>
+        {% for a in actions %}
+        <option value="{{ a }}" {{ 'selected' if a == action }}>{{ a }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>时间</th><th>操作人</th><th>动作</th><th>目标</th>
+        <th>变更字段</th><th>IP</th><th>详情</th>
+      </tr></thead>
+      <tbody>
+      {% for l in pagination.items %}
+      <tr>
+        <td style="font-size:12px">{{ l.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td>{{ l.user.real_name if l.user else '系统' }}</td>
+        <td><span class="badge-soft {{ 'green' if l.action == 'CREATE'
+            else 'orange' if l.action == 'DELETE' else 'blue' }}">{{ l.action_name }}</span></td>
+        <td style="font-size:12px">{{ l.target_table }}#{{ l.target_id or '-' }}</td>
+        <td style="font-size:12px">{{ l.changed_fields or '-' }}</td>
+        <td style="font-size:12px">{{ l.ip }}</td>
+        <td>
+          {% if l.detail %}
+          <button class="btn btn-sm btn-outline-secondary py-0 px-2"
+                  data-bs-toggle="collapse" data-bs-target="#d{{ l.id }}">展开</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% if l.detail %}
+      <tr class="collapse" id="d{{ l.id }}">
+        <td colspan="7" style="background:#fafbfa">
+          <pre style="font-size:11.5px;margin:0;white-space:pre-wrap">{{ l.detail | tojson(indent=2) }}</pre>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pager(pagination, 'audit.index', {'action': action or ''}) }}
+{% endblock %}

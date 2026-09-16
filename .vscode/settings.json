@@ -1,0 +1,35 @@
+{
+  // 指向项目自带的虚拟环境。
+  //
+  // 【为什么需要这个文件】
+  // 机器上往往有多个 Python 环境（系统 Python、其他项目的 venv、PyCharm 的 venv…）。
+  // VS Code 默认可能选中其中任意一个 —— 如果选中了不带本项目依赖的那个，
+  // 运行时会报：
+  //     ModuleNotFoundError: No module named 'flask_login'
+  // 而且报错位置指向 app/extensions.py，看堆栈会误以为是代码问题。
+  //
+  // 把解释器路径写进仓库，团队成员 clone 后开箱即用，不用手动切。
+  //
+  // ⚠️ 路径用正斜杠，不要用反斜杠！
+  //    JSON 里合法的转义序列只有 \" \\ \/ \b \f \n \r \t \uXXXX 这几种。
+  //    写成 "${workspaceFolder}\.venv\Scripts\python.exe" 的话，
+  //    `\.` 和 `\S` 都是**非法转义**，整个文件不是合法 JSON ——
+  //    VS Code 会解析失败，然后在切换解释器时报
+  //    "无法写入文件夹设置。请清除错误或警告后重试"。
+  //    正斜杠在 Windows 上同样有效，且完全不需要转义。
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/Scripts/python.exe",
+
+  // 终端里新建的 shell 也自动激活这个 venv
+  "python.terminal.activateEnvironment": true,
+
+  // 让 Pylance 按项目 venv 解析第三方包，避免满屏假的 import 报错
+  "python.analysis.extraPaths": ["${workspaceFolder}"],
+
+  "files.encoding": "utf8",
+  "files.eol": "\n",
+
+  // .bat 必须保持 CRLF，编辑器里显示出来提醒一下
+  "[bat]": {
+    "files.eol": "\r\n"
+  }
+}

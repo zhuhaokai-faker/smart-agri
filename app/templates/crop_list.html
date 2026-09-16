@@ -1,0 +1,43 @@
+{% extends 'base.html' %}
+{% block page_title %}作物品种{% endblock %}
+{% block content %}
+<div class="note mb-3">
+  <h6><i class="bi bi-flower1"></i> 这张表藏着这个项目最关键的设计</h6>
+  <strong>生物学零度</strong>和<strong>所需有效积温</strong>不是硬编码在代码里，
+  而是作为数据存在 <code>crop</code> 表中。于是"这批作物积温够不够成熟"这个判断
+  可以<strong>完全在 SQL 里完成</strong>，改品种不用改代码。<br>
+  不同作物差异很大：小麦零度 <code>0℃</code>，黄瓜 <code>12℃</code>；
+  所需积温从白菜 <code>1110℃·d</code> 到苹果 <code>2920℃·d</code>。
+  如果写成常量，多作物支持就无从谈起。<br>
+  <strong>把领域知识沉淀进数据模型，而不是散落在业务代码里</strong> ——
+  这是领域驱动设计最直接的收益。
+</div>
+
+<div class="card">
+  <div class="card-header">作物品种列表 <span class="sub">{{ crops | length }} 个品种</span></div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>编码</th><th>作物</th><th>品种</th><th>类别</th>
+        <th class="num">生物学零度(℃)</th><th class="num">所需积温(℃·d)</th>
+        <th class="num">生育期(天)</th><th>状态</th>
+      </tr></thead>
+      <tbody>
+      {% for c in crops %}
+      <tr>
+        <td style="font-size:12px">{{ c.crop_code }}</td>
+        <td><strong>{{ c.name }}</strong></td>
+        <td style="font-size:12.5px">{{ c.variety }}</td>
+        <td><span class="badge-soft blue">{{ c.category_name }}</span></td>
+        <td class="num">{{ c.base_temp }}</td>
+        <td class="num"><strong>{{ c.gdd_maturity | num(0) }}</strong></td>
+        <td class="num">{{ c.growth_days }}</td>
+        <td><span class="badge-soft {{ 'green' if c.status == 1 else 'gray' }}">
+            {{ '启用' if c.status == 1 else '停用' }}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

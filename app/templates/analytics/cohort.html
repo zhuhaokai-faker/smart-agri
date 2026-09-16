@@ -1,0 +1,145 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}⑦ 同期群留存分析{% endblock %}
+
+{% block content %}
+{{ M.question('按地块"第一次种植的茬口"分群，看它们在后续各茬口还在种的比例。
+留存率逐季下降说明有地块在退出耕作 —— 对合作社的土地管理是重要预警信号。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">同期群留存曲线
+        <span class="sub">横轴=距首季的第 N 个茬口，纵轴=仍在种植的地块比例</span></div>
+      <div class="card-body"><div id="cohortChart" class="chart chart-lg"></div></div>
+    </div>
+  </div>
+</div>
+
+{% call M.table_wrap('留存明细', '季序 0 = 首季本身，留存率必然 100%', 400) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>同期群（首季）</th><th class="num">群规模</th>
+    <th class="num">季序</th><th class="num">留存地块</th><th class="num">留存率</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    {% if loop.first or rows[loop.index0 - 1].cohort_seq != r.cohort_seq %}
+    <td><strong>{{ r.cohort_label }}</strong></td>
+    <td class="num">{{ r.cohort_size }}</td>
+    {% else %}
+    <td></td><td></td>
+    {% endif %}
+    <td class="num">第 {{ r.season_idx }} 茬</td>
+    <td class="num">{{ r.retained }}</td>
+    <td class="num">
+      <span class="badge-soft {{ 'green' if r.retention_pct >= 80
+          else 'orange' if r.retention_pct >= 60 else 'red' }}">
+        {{ r.retention_pct | num(1) }}%</span>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.cohort, '实际执行的 SQL —— 用 CTE 拆解同期群逻辑') }}
+
+{{ M.note('季序必须是「线性递增」的序号',
+ '本项目用 <code>season_seq = 年份 × 2 + (春=1 / 秋=2)</code>，
+ 相邻茬口恰好相差 1。<br><br>
+ <strong>⚠️ 改成年月编码就会全错。</strong>比如用 <code>202412</code> 这种形式，
+ 2024 年 12 月的下一个茬口是 <code>202501</code>，两者相差 <strong>89 而不是 1</strong> ——
+ 跨年时"连续"的判断会彻底崩掉。<br><br>
+ 更隐蔽的是：<strong>这个 bug 只在跨年的连续段上暴露</strong>，
+ 数据不足 12 个月的话永远发现不了。同类问题见分析 ⑧ 的 DATE 编码。', warn=true) }}
+
+{{ M.note('天然的自检断言',
+ '季序 = 0 的那一行就是"首季本身"，留存地块数<strong>必然等于群规模</strong>，
+ 留存率<strong>必然 100%</strong>。<br><br>
+ 如果某一行不是 100%，说明查询有 bug（通常是 season_seq 的线性假设被破坏了）。<br>
+ <code>sql/05_tests.sql</code> 的断言 4 就是守这一条 ——
+ <strong>用业务逻辑本身的性质做测试，比人工核对具体数字可靠得多</strong>。') }}
+
+{{ M.note('怎么读这张图',
+ '· 曲线<strong>快速下降后趋于平缓</strong>：前期有地块退出，剩下的稳定耕作 —— 正常。<br>
+ · 曲线<strong>持续下滑到底</strong>：大量地块在陆续退出，需要调查原因
+   （收益下降？劳动力不足？土地流转？）。<br>
+ · 不同同期群的<strong>起点高度不同</strong>：越晚的群规模越小，可能是
+   新增地块减少，也可能是统计口径变化。<br><br>
+ 本项目的造数里每茬有 18% 概率轮休，所以留存率自然会衰减到 70~80% 区间 ——
+ 这符合"部分地块轮作休耕"的真实农业节奏。') }}
+
+{{ M.legacy57('
+<strong>5.7 没有 CTE，只能用三层嵌套派生表表达同样的逻辑：</strong>
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">SELECT co.cohort_seq, cs.cohort_size,
+       (act.season_seq - co.cohort_seq) AS season_idx,
+       COUNT(DISTINCT act.plot_id) AS retained
+FROM (
+    -- 第 1 层：每个地块的首季
+    SELECT plot_id, MIN(season_seq) AS cohort_seq
+    FROM planting WHERE status IN (20,30,40) GROUP BY plot_id
+) co
+JOIN (
+    -- 第 2 层：每个地块每个茬口的活动
+    SELECT plot_id, season_seq FROM planting
+    WHERE status IN (20,30,40) GROUP BY plot_id, season_seq
+) act ON act.plot_id = co.plot_id
+JOIN (
+    -- 第 3 层：群规模（再一次算首季！）
+    SELECT t.cohort_seq, COUNT(*) AS cohort_size FROM (
+        SELECT plot_id, MIN(season_seq) AS cohort_seq
+        FROM planting WHERE status IN (20,30,40) GROUP BY plot_id
+    ) t GROUP BY t.cohort_seq
+) cs ON cs.cohort_seq = co.cohort_seq
+GROUP BY co.cohort_seq, cs.cohort_size, act.season_seq
+ORDER BY co.cohort_seq, season_idx;</pre>
+两个明显的问题：<br>
+① <strong>"每个地块的首季"这段逻辑被重复写了两遍</strong>
+   （第 1 层和第 3 层里各一次）。改口径时漏改一处就出错。<br>
+② <strong>读不出结构</strong> —— 三层嵌套派生表层层套在一起，
+   很难一眼看出"首季 / 活动 / 群规模"这三件事的关系。<br><br>
+<strong>8.0 的 CTE 让每一步都变成有名字、自包含的结果集</strong>：
+<code>valid</code> / <code>cohort</code> / <code>cohort_size</code> /
+<code>activity</code> / <code>label</code> —— 主查询只负责把它们拼起来。<br>
+逻辑重复也消除了：<code>cohort</code> 定义一次，后面直接引用。<br><br>
+<strong>这是本次迁移中可读性提升最大的一处</strong>：
+SQL 从 40 行降到 35 行，但理解成本降了一个量级。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const ROWS = {{ rows | tojson }};
+const LABELS = [...new Set(ROWS.map(d => d.cohort_label))];
+
+initChart('cohortChart', chartOpt({
+    grid: { left: 66, right: 40, top: 40, bottom: 40, containLabel: true },
+    tooltip: { trigger: 'axis',
+        formatter: p => {
+            let s = p[0].axisValue + ' 茬<br/>';
+            p.forEach(x => { s += `${x.marker}${x.seriesName}：<b>${x.value}%</b><br/>`; });
+            return s;
+        }
+    },
+    legend: { data: LABELS, top: 0, textStyle: { fontSize: 11 } },
+    xAxis: Object.assign(axisStyle(), {
+        data: [...new Set(ROWS.map(d => d.season_idx))].map(i => '第' + i + '茬'),
+        name: '距首季茬口数', nameLocation: 'middle', nameGap: 26
+    }),
+    yAxis: Object.assign(valueAxis('留存率 (%)', v => v + '%'), { max: 100 }),
+    series: LABELS.map((label, i) => ({
+        name: label, type: 'line', smooth: true,
+        symbolSize: 7, lineStyle: { width: 2.4 },
+        /* 首季用最深色，后续同期群依次变浅 ——
+           时间越早的群观察周期越长，用深色强调。 */
+        itemStyle: { color: ['#1b5e20', '#43a047', '#81c784', '#c8e6c9'][i % 4] },
+        data: [...new Set(ROWS.map(d => d.season_idx))].map(idx => {
+            const r = ROWS.find(x => x.cohort_label === label && x.season_idx === idx);
+            return r ? r.retention_pct : null;
+        })
+    }))
+}));
+</script>
+{% endblock %}

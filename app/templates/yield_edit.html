@@ -1,0 +1,107 @@
+{% extends 'base.html' %}
+{% from '_yield_actions.html' import yield_actions with context %}
+{% block page_title %}编辑产量记录 · {{ y.planting.batch_no }}{% endblock %}
+{% block content %}
+<div class="row">
+<div class="col-lg-8">
+  <div class="card">
+    <div class="card-header">编辑产量记录
+      <span class="sub">修改会记入操作审计日志（含变更前后快照）</span></div>
+    <div class="card-body">
+      <form method="post">
+        {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <div class="row g-2">
+          <div class="col-md-4">
+            <label class="form-label">收获面积（亩）<span class="text-danger">*</span></label>
+            <input type="number" step="0.01" name="harvest_area_mu" class="form-control"
+                   value="{{ y.harvest_area_mu }}" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">总产量（kg）<span class="text-danger">*</span></label>
+            <input type="number" step="0.01" name="yield_kg" class="form-control"
+                   value="{{ y.yield_kg }}" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">等级</label>
+            <select name="grade" class="form-select">
+              {% for k, v in [(1,'一级'),(2,'二级'),(3,'三级')] %}
+              <option value="{{ k }}" {{ 'selected' if y.grade == k }}>{{ v }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-8">
+            <label class="form-label">销售单价（元/kg）</label>
+            <input type="number" step="0.0001" name="unit_price" class="form-control"
+                   value="{{ y.unit_price }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">含水率（%）</label>
+            <input type="number" step="0.01" name="moisture_content" class="form-control"
+                   value="{{ y.moisture_content }}">
+          </div>
+          <div class="col-12">
+            <label class="form-label">品质说明</label>
+            <input type="text" name="quality_note" class="form-control" maxlength="255"
+                   value="{{ y.quality_note }}">
+          </div>
+        </div>
+
+        <hr>
+        <div class="row g-2">
+          <div class="col-md-4">
+            <label class="form-label text-muted">单产（kg/亩）</label>
+            <input type="text" class="form-control" value="{{ y.yield_per_mu | num(1) }}" disabled>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted">产值（元）</label>
+            <input type="text" class="form-control" value="{{ y.output_value | num(0) }}" disabled>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label text-muted">收获日期</label>
+            <input type="text" class="form-control" value="{{ y.harvest_date }}" disabled>
+          </div>
+          <div class="col-12">
+            <div class="form-text">
+              这三个是只读的：前两个是 <strong>STORED 生成列</strong>，保存后由数据库
+              按新的产量/面积/单价重算；收获日期跟随种植批次，要改请改批次本身。
+            </div>
+          </div>
+        </div>
+
+        <div class="mt-3 d-flex align-items-center gap-2">
+          <button class="btn btn-success">保存</button>
+          <a href="{{ url_for('production.yield_list') }}"
+             class="btn btn-outline-secondary">取消</a>
+          <div class="ms-auto">{{ yield_actions(y) }}</div>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="col-lg-4">
+  <div class="card mb-3">
+    <div class="card-header">来源信息 <span class="sub">不可修改</span></div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <tr><th style="width:100px">种植批次</th><td>{{ y.planting.batch_no }}</td></tr>
+        <tr><th>地块</th><td>{{ y.plot.plot_no }}</td></tr>
+        <tr><th>作物</th><td>{{ y.crop.name }}</td></tr>
+        <tr><th>收获日期</th><td>{{ y.harvest_date }}</td></tr>
+        <tr><th>收获面积</th><td>{{ y.harvest_area_mu | num(1) }} 亩</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <div class="note">
+    <h6><i class="bi bi-calculator"></i> 为什么单产/产值不给编辑框</h6>
+    <code>yield_per_mu</code>（单产）和 <code>output_value</code>（产值）是
+    <strong>STORED 生成列</strong>，MySQL 在写入时按公式重算并物化存储。<br>
+    所以改了总产量，单产会自动跟着变，<strong>不需要应用层记得同步</strong>；
+    反过来，任何试图显式给它们赋值的语句都会被 MySQL 拒绝（errno 3105）——
+    这是数据库在帮我们挡掉"手写一个不一致的值"。
+  </div>
+</div>
+</div>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends 'base.html' %}
+{% from '_pager.html' import pager %}
+{% block page_title %}农事作业{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header">农事作业记录 <span class="sub">{{ pagination.total }} 条</span></div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>作业日期</th><th>批次</th><th>地块</th><th>作业类型</th><th>描述</th>
+        <th class="num">人工工时</th><th class="num">机械工时</th>
+        <th class="num">人工费</th><th class="num">机械费</th><th>记录人</th>
+      </tr></thead>
+      <tbody>
+      {% for l in pagination.items %}
+      <tr>
+        <td>{{ l.op_date }}</td>
+        <td style="font-size:12px">{{ l.planting.batch_no }}</td>
+        <td>{{ l.planting.plot.plot_no }}</td>
+        <td><span class="badge-soft {{ 'green' if l.op_type == 60
+            else 'orange' if l.op_type == 20 else 'blue' }}">{{ l.op_name }}</span></td>
+        <td style="font-size:12.5px">{{ l.description }}</td>
+        <td class="num">{{ l.labor_hours | num(1) }}</td>
+        <td class="num">{{ l.machine_hours | num(1) }}</td>
+        <td class="num">{{ l.labor_cost | num(0) }}</td>
+        <td class="num">{{ l.machine_cost | num(0) }}</td>
+        <td style="font-size:12.5px">{{ l.operator.real_name if l.operator else '-' }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pager(pagination, 'production.farming_log_list') }}
+
+<div class="note mt-3">
+  <h6><i class="bi bi-info-circle"></i> 农事记录与农资投入是两张表</h6>
+  它们回答<strong>两个不同维度</strong>的问题：<br>
+  · <code>farming_log</code> → "什么时间做了什么作业"（过程维度，含人工/机械费）<br>
+  · <code>input_cost</code> → "买了什么、用了多少、多少钱"（物资成本维度）<br><br>
+  合并成一张表会导致大量 NULL：一次灌溉有工时但没有物资单价，
+  买化肥有金额但没有作业描述。<strong>一张表两种语义、列大量为空</strong>，
+  是典型的设计异味。
+</div>
+{% endblock %}

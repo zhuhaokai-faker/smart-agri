@@ -1,0 +1,79 @@
+# =============================================================================
+#  Smart Agriculture Analytics Platform - Dependency Manifest
+# =============================================================================
+#  Install:  pip install -r requirements.txt
+#
+#  Requires MySQL 8.0 (this project uses window functions, CTE,
+#  JSON_TABLE and CHECK constraints - none of which exist in 5.7).
+#
+#  ---------------------------------------------------------------------------
+#  WHY THIS FILE IS PURE ASCII (do not add Chinese comments here!)
+#  ---------------------------------------------------------------------------
+#  pip reads requirements.txt using the *system locale* encoding on Windows,
+#  and only falls back to UTF-8 when the file starts with a UTF-8 BOM.
+#  On a Chinese Windows (locale = GBK / cp936), a UTF-8 file WITHOUT a BOM
+#  containing non-ASCII characters fails outright with:
+#
+#      UnicodeDecodeError: 'gbk' codec can't decode byte 0xa4 ...
+#      decoding with 'cp936' codec failed
+#
+#  That breaks the very first step of the quick-start instructions.
+#  Chinese explanations live in README.md and docs/ instead.
+#  ---------------------------------------------------------------------------
+#
+#  Few dependencies is intentional: the frontend is Jinja2 + Bootstrap +
+#  ECharts, all vendored under static/vendor/. No Node.js / npm / build step.
+# =============================================================================
+
+# ---------- Direct dependencies ----------
+Flask==3.1.3
+Flask-SQLAlchemy==3.1.1
+Flask-Login==0.6.3
+PyMySQL==1.2.0
+
+# CSRF protection. NOT optional once this app is reachable from the public
+# internet (see tunnel scripts) - without it, any page a logged-in admin
+# visits can silently POST to /plantings/<id>/status or /yields/<id>/delete
+# using their session cookie. Locally it looked harmless; exposed it does not.
+#
+# Only CSRFProtect is used here, not the rest of Flask-WTF's form machinery:
+# the templates are hand-written Bootstrap forms, and rewriting them to
+# WTForms classes would be a large change with no security benefit.
+# CSRFProtect works globally with zero per-route code - just needs
+# {{ csrf_token() }} inside each <form>.
+Flask-WTF==1.3.0
+
+# REQUIRED, not optional. MySQL 8.0 defaults to the caching_sha2_password
+# auth plugin (5.7 used mysql_native_password). PyMySQL can handle it two ways:
+#   - fast path: works from the server-side credential cache, no extra deps
+#   - full path: needs RSA key exchange, which REQUIRES the cryptography package
+# With only PyMySQL installed the first connection may "accidentally" succeed
+# via the cache, but the connection breaks as soon as MySQL restarts and the
+# auth cache is cleared:
+#     RuntimeError: 'cryptography' package is required for
+#                   sha256_password or caching_sha2_password auth methods
+# That is the classic "works but is not robust" failure - pin it explicitly.
+cryptography>=42.0
+
+# ---------- Transitive dependencies (pinned explicitly) ----------
+# Not imported directly, but pinned so every machine resolves identically
+# (Flask's own version ranges are wide) and so the full dependency set is
+# visible without reading pip's resolver output.
+#
+# Trade-off: pinning transitive deps here means a Flask upgrade must update
+# these lines too, or versions can conflict. Fine for a small project; a large
+# one should generate a lock file with pip-tools / poetry instead.
+Jinja2==3.1.6
+Werkzeug==3.1.8
+SQLAlchemy==2.0.52
+WTForms==3.2.2                  # pulled in by Flask-WTF
+
+# ---------- Removed dependencies (and why) ----------
+# python-dotenv - replaced by a ~15 line load_dotenv() in config.py.
+#                 It only handles the KEY=VALUE case this project needs, and
+#                 preserves the same semantics (real env vars win over .env).
+# Faker         - never imported. The seed script builds every distribution
+#                 by hand with the stdlib random module. A declared-but-unused
+#                 dependency is a liability: it grows the install and the
+#                 supply-chain surface, and misleads readers into thinking
+#                 something uses it.

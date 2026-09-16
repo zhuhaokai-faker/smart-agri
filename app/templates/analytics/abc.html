@@ -1,0 +1,184 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}⑥ ABC 帕累托分析{% endblock %}
+
+{% block content %}
+{{ M.question('是不是少数地块贡献了大部分产量？如果是，管理资源（良种、肥料、技术指导）
+应该优先投给谁？ABC 分析法把地块按贡献度分成三类。') }}
+
+<div class="row g-3 mb-3">
+  {% set colors = {'A': 'green', 'B': 'blue', 'C': 'gray'} %}
+  {% for s in summary %}
+  <div class="col-lg-4">
+    <div class="kpi">
+      <div class="label">
+        <span class="legend-dot" style="background:{{ '#2e7d32' if s.abc_class == 'A'
+            else '#42a5f5' if s.abc_class == 'B' else '#9e9e9e' }}"></span>
+        {{ s.abc_class }} 类地块
+        <span class="sub ms-auto" style="font-size:11px;color:#9aa79c">
+          {{ '核心贡献' if s.abc_class == 'A' else '中坚力量' if s.abc_class == 'B' else '长尾地块' }}
+        </span>
+      </div>
+      <div class="value">{{ s.plot_cnt }}<span class="unit">块</span></div>
+      <div style="font-size:12.5px;color:#55645a;margin-top:8px;line-height:1.9">
+        占全部地块 <strong>{{ s.plot_pct }}%</strong><br>
+        贡献产量 <strong style="color:#2e7d32">{{ s.yield_pct }}%</strong>
+        （{{ s.yield_kg | num(0) }} kg）
+      </div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">累计贡献曲线
+        <span class="sub">横轴=地块（按产量降序），纵轴=累计占比</span></div>
+      <div class="card-body"><div id="abcCurve" class="chart chart-md"></div></div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">地块数占比 vs 产量占比</div>
+      <div class="card-body"><div id="abcBar" class="chart chart-md"></div></div>
+    </div>
+  </div>
+</div>
+
+{% call M.table_wrap('贡献最大的地块（A 类）', '按累计占比升序，即贡献从大到小', 420) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th class="num">#</th><th>地块</th><th>作物</th>
+    <th class="num">产量(kg)</th><th class="num">累计产量(kg)</th>
+    <th class="num">累计占比</th><th>ABC</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+  <tr>
+    <td class="num">{{ loop.index }}</td>
+    <td>{{ r.plot_no }}</td>
+    <td>{{ r.crop_name }}</td>
+    <td class="num">{{ r.yield_kg | num(0) }}</td>
+    <td class="num">{{ r.cum_yield | num(0) }}</td>
+    <td class="num"><strong>{{ r.cum_pct | num(2) }}%</strong></td>
+    <td><span class="badge-soft {{ 'green' if r.abc_class == 'A'
+        else 'blue' if r.abc_class == 'B' else 'gray' }}">{{ r.abc_class }}</span></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.abc, '实际执行的 SQL —— SUM() OVER (ORDER BY ...) 逐行累计') }}
+
+{{ M.note('ABC 分类的阈值',
+ '按累计产量占比切分，这是帕累托分析的通用口径：<br>
+ · <strong>A 类：累计占比 ≤ 70%</strong> —— 贡献最大的核心地块<br>
+ · <strong>B 类：70% ~ 90%</strong> —— 中坚力量<br>
+ · <strong>C 类：> 90%</strong> —— 长尾地块<br><br>
+ 阈值本身可以按业务调整（有些行业用 80/95）。关键是<strong>口径要固定</strong>，
+ 不能这个月用 70/90、下个月用 80/95 —— 那样趋势就没法比较了。') }}
+
+{{ M.note('两个容易忽略的细节',
+ '<strong>① 累计帧必须显式写 <code>ROWS</code></strong><br>
+ 默认帧 <code>RANGE</code> 会把 <code>ORDER BY</code> 值<strong>相同的行算作同一帧</strong>。
+ 如果两块地总产量完全相同，RANGE 会让它们得到<strong>同一个累计值</strong> ——
+ 相当于把两块地当作一块算，ABC 分类直接出错。<br><br>
+ <strong>② 排序必须带唯一破平局键</strong><br>
+ <code>ORDER BY total_yield_kg DESC, plot_id ASC</code>。
+ 窗口函数的 <code>ORDER BY</code> 决定 ROWS 帧的推进顺序，
+ 并列值时的顺序不确定 → 累计值不确定 → ABC 分类不确定。<br>
+ <strong>窗口函数不会替你消除这种不确定性。</strong><br><br>
+ 另外这条查询用了 <strong>具名窗口（<code>WINDOW</code> 子句）</strong>：
+ 同一个窗口定义在 SELECT 里被引用 4 次，定义一次即可 ——
+ 这是 8.0 的可读性改进。', warn=true) }}
+
+{{ M.legacy57('
+<strong>5.7 只能用用户变量逐行累加：</strong>
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">SET @cum := 0;
+
+SELECT t.plot_no, t.crop_name, t.total_yield_kg,
+       @cum := @cum + t.total_yield_kg AS cum_yield,
+       ROUND(@cum / (SELECT SUM(total_yield_kg)
+                     FROM v_plot_yield_summary) * 100, 2) AS cum_pct
+FROM (
+    SELECT plot_no, crop_name, total_yield_kg
+    FROM v_plot_yield_summary
+    ORDER BY total_yield_kg DESC, plot_id ASC
+    LIMIT 18446744073709551615      -- ← 必须强制物化
+) s
+CROSS JOIN (SELECT @cum := 0) init;</pre>
+同样的两个约束：<code>LIMIT</code> 保住 <code>ORDER BY</code>（否则累加顺序错乱），
+排序带上 <code>plot_id</code> 破平局键（否则并列值结果不可复现）。<br><br>
+<strong>两种写法的真实差异在内存上</strong>：<br>
+· 用户变量版本是<strong>流式</strong>的 —— 逐行读、逐行累加，内存占用恒定；<br>
+· 窗口函数版本要<strong>物化</strong>整个结果集才能计算，数据量极大时可能落盘。<br>
+所以"8.0 的写法更先进"不等于"8.0 的写法永远更快" ——
+在内存受限或结果集很大的场景下，5.7 的流式写法反而有优势。<br><br>
+这也是本项目的 <code>sql/03_optimize.sql</code> 里要单独讨论"预聚合汇总表"的原因：
+真正解决性能问题靠的是<strong>减少数据量</strong>，而不是换一种窗口函数写法。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const CURVE = {{ rows | tojson }};
+const SUMMARY = {{ summary | tojson }};
+
+/* ---------------- 累计贡献曲线（洛伦兹曲线） ---------------- */
+initChart('abcCurve', chartOpt({
+    grid: { left: 62, right: 40, top: 34, bottom: 40, containLabel: true },
+    tooltip: { trigger: 'axis',
+        formatter: p => {
+            const i = p[0].dataIndex;
+            return `${CURVE[i].plot_no}（${CURVE[i].crop_name}）<br/>
+                    累计占比 <b>${fmt.num(CURVE[i].cum_pct, 2)}%</b><br/>
+                    产量 ${fmt.num(CURVE[i].yield_kg, 0)} kg`;
+        }
+    },
+    xAxis: Object.assign(axisStyle(), {
+        data: CURVE.map((d, i) => i + 1),
+        name: '地块数', nameLocation: 'middle', nameGap: 26
+    }),
+    yAxis: valueAxis('累计占比 (%)', v => v + '%'),
+    series: [{
+        name: '累计占比', type: 'line', smooth: true, showSymbol: false,
+        lineStyle: { width: 2.6, color: '#2e7d32' },
+        areaStyle: { color: 'rgba(46,125,50,.12)' },
+        /* 两条参考线把 A/B/C 的边界画出来，
+           比在文字里写"阈值 70%"直观得多。 */
+        markLine: {
+            silent: true, symbol: 'none',
+            lineStyle: { type: 'dashed', width: 1.3 },
+            data: [
+                { yAxis: 70, lineStyle: { color: '#2e7d32' },
+                  label: { formatter: 'A/B 边界 70%', fontSize: 10, color: '#2e7d32' } },
+                { yAxis: 90, lineStyle: { color: '#1565c0' },
+                  label: { formatter: 'B/C 边界 90%', fontSize: 10, color: '#1565c0' } }
+            ]
+        },
+        data: CURVE.map(d => d.cum_pct)
+    }]
+}));
+
+/* ---------------- 地块数占比 vs 产量占比 ---------------- */
+initChart('abcBar', chartOpt({
+    grid: { left: 58, right: 30, top: 34, bottom: 34, containLabel: true },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['地块数占比', '产量占比'], top: 0 },
+    xAxis: Object.assign(axisStyle(), { data: SUMMARY.map(d => d.abc_class + ' 类') }),
+    yAxis: valueAxis('占比 (%)', v => v + '%'),
+    series: [
+        { name: '地块数占比', type: 'bar', barMaxWidth: 48,
+          itemStyle: { color: '#bdbdbd', borderRadius: [3, 3, 0, 0] },
+          label: { show: true, position: 'top', formatter: '{c}%', fontSize: 11 },
+          data: SUMMARY.map(d => d.plot_pct) },
+        { name: '产量占比', type: 'bar', barMaxWidth: 48,
+          itemStyle: { color: '#2e7d32', borderRadius: [3, 3, 0, 0] },
+          label: { show: true, position: 'top', formatter: '{c}%', fontSize: 11 },
+          data: SUMMARY.map(d => d.yield_pct) }
+    ]
+}));
+</script>
+{% endblock %}

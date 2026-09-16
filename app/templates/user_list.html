@@ -1,0 +1,129 @@
+{% extends 'base.html' %}
+{% from '_pager.html' import pager %}
+{% block page_title %}用户管理{% endblock %}
+
+{% block content %}
+<div class="note mb-3">
+  <h6><i class="bi bi-shield-lock"></i> 注册即只读，提权由这里手动做</h6>
+  新注册的账号<strong>一律是「只读」</strong>，看不到编辑按钮、直接 POST 也会被 403 拦截。<br>
+  想要写权限，需要你在这个页面把它提升为「农艺师」。<br>
+  <strong>这个设计的意义</strong>：注册是唯一对公网开放的写入口，把它做成"只能进来看看"，
+  即使被批量刷号，攻击者拿到的也只是一堆只能看的账号 —— 危害面被压到最小。
+</div>
+
+<div class="row g-3 mb-3">
+  {% set cards = [
+    ('管理员', stats.admin, 'bi-shield-fill-check', '#c62828'),
+    ('农艺师', stats.agronomist, 'bi-person-check-fill', '#1565c0'),
+    ('只读', stats.viewer, 'bi-person-fill', '#7b8a7e'),
+    ('已禁用', stats.disabled, 'bi-person-slash', '#9e9e9e'),
+  ] %}
+  {% for label, val, icon, color in cards %}
+  <div class="col-6 col-lg-3">
+    <div class="kpi">
+      <div class="label"><i class="bi {{ icon }}" style="color:{{ color }}"></i>{{ label }}</div>
+      <div class="value">{{ val }}<span class="unit">个</span></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card">
+  <div class="card-header d-flex align-items-center flex-wrap gap-2">
+    <span>用户列表 <span class="sub">共 {{ stats.total }} 个账号</span></span>
+    <form class="ms-auto d-flex gap-2" method="get">
+      <select name="role" class="form-select form-select-sm" style="width:130px"
+              onchange="this.form.submit()">
+        <option value="">全部角色</option>
+        <option value="1" {{ 'selected' if role == 1 }}>管理员</option>
+        <option value="2" {{ 'selected' if role == 2 }}>农艺师</option>
+        <option value="3" {{ 'selected' if role == 3 }}>只读</option>
+      </select>
+      <input type="text" name="q" class="form-control form-control-sm"
+             style="width:150px" placeholder="用户名" value="{{ keyword }}">
+      <button class="btn btn-sm btn-success">筛选</button>
+    </form>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>ID</th><th>用户名</th><th>姓名</th><th>邮箱</th>
+        <th>角色</th><th>状态</th><th>最后登录</th><th>注册时间</th>
+        <th style="width:230px">操作</th>
+      </tr></thead>
+      <tbody>
+      {% for u in pagination.items %}
+      <tr class="{{ 'table-secondary' if u.status == 0 }}">
+        <td class="num">{{ u.id }}</td>
+        <td>
+          <a href="{{ url_for('admin.user_detail', uid=u.id) }}"
+             class="text-decoration-none"><strong>{{ u.username }}</strong></a>
+          {% if u.id == current_user.id %}
+          <span class="badge-soft green ms-1">当前登录</span>
+          {% endif %}
+        </td>
+        <td style="font-size:12.5px">{{ u.real_name or '—' }}</td>
+        <td style="font-size:12.5px">{{ u.email or '—' }}</td>
+        <td>
+          <span class="badge-soft {{ 'red' if u.role == 1
+              else 'blue' if u.role == 2 else 'gray' }}">{{ u.role_name }}</span>
+        </td>
+        <td>
+          <span class="badge-soft {{ 'green' if u.status == 1 else 'gray' }}">
+            {{ '启用' if u.status == 1 else '禁用' }}</span>
+        </td>
+        <td style="font-size:12px">
+          {{ u.last_login_at.strftime('%m-%d %H:%M') if u.last_login_at else '从未登录' }}</td>
+        <td style="font-size:12px">{{ u.created_at.strftime('%Y-%m-%d') if u.created_at }}</td>
+        <td>
+          {# ---- 角色调整 ----
+             自己的那一行不显示按钮：服务端也会拒绝（见 user_service.change_role），
+             前端隐藏只是"别让你点了才发现不行"。
+             真正防"把自己锁在门外"的是服务端那两道校验。 #}
+          {% if u.id != current_user.id %}
+          <form method="post" action="{{ url_for('admin.change_role', uid=u.id) }}"
+                class="d-inline">
+            {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <select name="role" class="form-select form-select-sm d-inline-block"
+                    style="width:96px" onchange="this.form.submit()">
+              <option value="1" {{ 'selected' if u.role == 1 }}>管理员</option>
+              <option value="2" {{ 'selected' if u.role == 2 }}>农艺师</option>
+              <option value="3" {{ 'selected' if u.role == 3 }}>只读</option>
+            </select>
+          </form>
+          <form method="post" action="{{ url_for('admin.toggle_status', uid=u.id) }}"
+                class="d-inline">
+            {# CSRF：POST 表单必须带，否则被 400 拒绝 #}
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="btn btn-sm py-0 px-2 {{ 'btn-outline-secondary' if u.status == 1 else 'btn-outline-success' }}"
+                    title="{{ '禁用后该账号将无法登录' if u.status == 1 else '恢复该账号的登录权限' }}">
+              {{ '禁用' if u.status == 1 else '启用' }}
+            </button>
+          </form>
+          {% else %}
+          <span class="text-muted" style="font-size:12px">
+            <i class="bi bi-lock"></i> 不能修改自己
+          </span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pager(pagination, 'admin.user_list', {'role': role or '', 'q': keyword or ''}) }}
+
+<div class="note warn mt-3">
+  <h6><i class="bi bi-exclamation-triangle"></i> 两条防止"把自己锁在门外"的保护</h6>
+  权限系统最经典的事故是管理员一次误操作把自己降权或禁用，
+  然后系统里再没人能改回来。所以 <code>user_service</code> 里做了两道校验：<br><br>
+  <strong>① 不能修改/禁用自己</strong> —— 界面上按钮直接不显示，服务端也会拒绝。<br>
+  <strong>② 不能降权/禁用「最后一个可用管理员」</strong> ——
+  即使系统里有多个管理员，也不允许把最后一个降权。
+  这条更隐蔽：如果只有你一个管理员，第 ① 条已经拦住了；
+  但如果你有权限改别人，可能把唯一的另一个管理员也降掉。<br><br>
+  这两条都跑过了实测，不是"理论上应该没问题"。
+</div>
+{% endblock %}

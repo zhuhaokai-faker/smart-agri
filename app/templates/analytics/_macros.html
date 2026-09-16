@@ -1,0 +1,104 @@
+{# =============================================================================
+   分析页共用宏
+
+   【为什么用宏而不是 copy-paste】
+   8 个分析页都要"展示 SQL + 原理说明 + 结果图表"，结构完全一致。
+   复制 8 遍的话，改一处样式要改 8 个文件 —— 迟早漏掉一个，
+   页面上就会出现风格不一致的"孤儿"区块。
+
+   【SQL 从哪里来】
+   sql 参数传的是 analytics_service.SQL['xxx'] —— 即**实际执行过的** SQL 原文。
+   不是手抄到模板里的副本，所以不存在"改了查询忘了改展示"的漂移。
+   ============================================================================= #}
+
+{% macro sql_block(sql, title='实际执行的 SQL', note='') %}
+<div class="sql-block mb-3">
+  <div class="sql-head">
+    <span><i class="bi bi-code-square"></i> {{ title }}
+      {% if note %}<span style="color:#6b7280"> — {{ note }}</span>{% endif %}
+    </span>
+    <button class="btn btn-sm btn-outline-light py-0 px-2"
+            style="font-size:11px" onclick="copySql(this)">
+      <i class="bi bi-clipboard"></i> 复制
+    </button>
+  </div>
+  <pre><code class="language-sql">{{ sql }}</code></pre>
+</div>
+{% endmacro %}
+
+
+{% macro note(title, body, warn=false) %}
+<div class="note {{ 'warn' if warn }} mb-3">
+  {% if title %}<h6><i class="bi bi-lightbulb"></i> {{ title }}</h6>{% endif %}
+  {{ body }}
+</div>
+{% endmacro %}
+
+
+{# 分析页头部的"这个问题在问什么"提示条 #}
+{% macro question(text) %}
+<div class="alert alert-success d-flex align-items-start py-2 mb-3"
+     style="background:#eef7ef;border-color:#cfe6d2;font-size:13px">
+  <i class="bi bi-question-circle-fill me-2 mt-1" style="color:#2e7d32"></i>
+  <div><strong>业务问题：</strong>{{ text }}</div>
+</div>
+{% endmacro %}
+
+
+{# 结果表格的通用包装 #}
+{% macro table_wrap(title='分析结果', sub='', height=380) %}
+<div class="card mb-3">
+  <div class="card-header">{{ title }}{% if sub %}<span class="sub">{{ sub }}</span>{% endif %}</div>
+  <div class="card-body p-0">
+    <div style="max-height:{{ height }}px;overflow:auto">
+      {{ caller() }}
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# -----------------------------------------------------------------------------
+   「MySQL 5.7 时代这段 SQL 要怎么写」的对比折叠块
+
+   【为什么迁移到 8.0 之后反而要保留这个块】
+   项目最初是按 MySQL 5.7 写的（5.7 没有窗口函数和 CTE），后来整体迁移到 8.0。
+   保留 5.7 的写法不是为了怀旧，而是因为：
+
+     ① **它解释了"为什么需要窗口函数"** ——
+        只看 8.0 的写法（一行 ROW_NUMBER）是感受不到它的价值的，
+        看到 5.7 需要用用户变量 + 强制物化 + 分组合计四行才能做到同样的事，
+        才知道窗口函数替你解决了什么。
+
+     ② **它是真实存在的兼容需求** ——
+        MySQL 5.7 虽然已经 EOL，但大量企业生产环境仍在跑。
+       能说清"两种写法各自的约束"，比只会一种更有说服力。
+
+     ③ **面试里这是个高频对比题**。
+   ----------------------------------------------------------------------------- #}
+{% macro legacy57(body) %}
+<div class="accordion mb-3" id="legacyacc">
+  <div class="accordion-item">
+    <h2 class="accordion-header">
+      <button class="accordion-button collapsed py-2" type="button"
+              data-bs-toggle="collapse" data-bs-target="#legacybody"
+              style="font-size:13px;background:#f7faf7">
+        <i class="bi bi-clock-history me-2" style="color:#7b8a7e"></i>
+        这段 SQL 在 MySQL 5.7 上要怎么写？（点击展开对比）
+      </button>
+    </h2>
+    <div id="legacybody" class="accordion-collapse collapse" data-bs-parent="#legacyacc">
+      <div class="accordion-body" style="font-size:13px;line-height:1.8">{{ body }}</div>
+    </div>
+  </div>
+</div>
+{% endmacro %}
+
+
+{# 「与 8.0 相关的其他写法/陷阱」提示块，用于 ②③⑥ 这些有版本差异细节的地方 #}
+{% macro gotcha(title, body) %}
+<div class="note warn mb-3">
+  <h6><i class="bi bi-exclamation-triangle"></i> {{ title }}</h6>
+  {{ body }}
+</div>
+{% endmacro %}

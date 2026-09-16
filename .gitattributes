@@ -1,0 +1,28 @@
+# 强制 .bat 使用 CRLF 换行
+#
+# 【为什么需要这个文件】
+# Windows 批处理文件**必须**用 CRLF 换行。用 LF 时 cmd.exe 的解析器会错乱，
+# 表现为两类错误：
+#   · echo 的中文被从中间劈开，后半截被当成命令名报「不是内部或外部命令」
+#   · 多行 if (...) 块被误解析，报「此时不应有 ...」
+# （这是实测结果，不是理论推测 —— 见 README 的「真实 Bug 记录」）
+#
+# 如果 git 的 core.autocrlf 设置为 false/input，或者项目被 clone 到 Linux 后
+# 再传回 Windows，换行符就可能被转成 LF，start.bat 会静默失效。
+# 用 .gitattributes 显式锁定，比依赖每个人本地的 git 配置可靠。
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 其余文本文件统一 LF，避免 diff 里出现整文件级的换行符噪音
+*.py   text eol=lf
+*.sql  text eol=lf
+*.md   text eol=lf
+*.html text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf
+*.txt  text eol=lf
+
+# 二进制文件不做换行符转换
+*.woff  binary
+*.woff2 binary

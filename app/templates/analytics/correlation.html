@@ -1,0 +1,201 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}③ 单产影响因子分析{% endblock %}
+
+{% block content %}
+{{ M.question('施肥量到底对产量有多大影响？有哪些因素在影响单产，哪个因素最值得投入？
+用皮尔逊相关系数量化每个因子与单产的关联强度。') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header">施肥量 vs 单产 散点图
+        {% if scatter_crop %}<span class="sub">{{ scatter_crop.full_name }} ·
+          {{ scatter | length }} 个样本</span>{% endif %}
+      </div>
+      <div class="card-body">
+        <form class="row g-2 mb-3" method="get">
+          <div class="col-md-8">
+            <select name="crop_id" class="form-select form-select-sm"
+                    onchange="this.form.submit()">
+              {% for c in crops %}
+              <option value="{{ c.id }}" {{ 'selected' if c.id == selected_id }}>
+                {{ c.full_name }}（{{ c.category_name }}）</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-4"><button class="btn btn-sm btn-success w-100">切换作物</button></div>
+        </form>
+        <div id="scatterChart" class="chart chart-lg"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">分作物的相关系数
+        <span class="sub">样本数 ≥ 5 才列出</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:520px;overflow:auto">
+          <table class="table table-sm table-hover mb-0">
+            <thead class="sticky-top"><tr>
+              <th>作物</th><th class="num">样本</th>
+              <th class="num">平均单产</th><th class="num">平均施肥</th>
+              <th class="num">相关系数 r</th>
+              <th class="num">公式校验</th>
+            </tr></thead>
+            <tbody>
+            {% for r in by_crop %}
+            <tr>
+              <td>{{ r.crop_name }}</td>
+              <td class="num">{{ r.sample_n }}</td>
+              <td class="num">{{ r.avg_yield | num(0) }}</td>
+              <td class="num">{{ r.avg_fert | num(1) }}</td>
+              <td class="num">
+                {% set v = r.pearson_r | float %}
+                <span class="badge-soft {{ 'green' if v >= 0.5 else 'orange' if v >= 0.3 else 'gray' }}">
+                  {{ r.pearson_r }}</span>
+              </td>
+              <td class="num">
+                <span class="badge-soft {{ 'green' if r.formula_check == '一致' else 'red' }}">
+                  {{ r.formula_check }}</span>
+              </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-4">
+    <div class="kpi">
+      <div class="label"><i class="bi bi-bullseye"></i>跨作物汇总相关系数</div>
+      <div class="value">{{ pooled.pearson_r }}
+        <span class="unit">n = {{ pooled.sample_n }}</span></div>
+      <div style="font-size:12px;color:#7b8a7e;margin-top:6px">
+        用「相对单产」归一化后合并全部样本计算
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    {{ M.note('这个系数说明了什么',
+     'r 落在 <strong>0.4 ~ 0.6</strong> 是农业数据的真实水平，说明施肥量对单产有
+     <strong>中等强度的正向影响</strong>。<br>
+     不要期待 r 接近 1 —— 影响单产的因素很多（地力、积温、降水、管理水平），
+     施肥只是其中之一。真实农业数据的相关系数能到 0.6 就已经很显著了。<br>
+     反而是<strong>算出来的 r ≈ 1 才可疑</strong>，那种数据基本是编的。') }}
+  </div>
+</div>
+
+{{ M.sql_block(SQL.corr_by_crop, '实际执行的 SQL —— 分作物的皮尔逊相关系数（手写公式）') }}
+
+{{ M.sql_block(SQL.corr_pooled, '跨作物汇总：用相对单产消除量纲差异') }}
+
+{{ M.note('MySQL 缺失的统计函数比想象的还多',
+ '这一条是很多人的知识盲区。<strong>实测确认（8.0.46 逐个调用验证）</strong>，
+ 下面这些在 MySQL 里<strong>全都不存在</strong>：<br>
+ <code>CORR</code> · <code>COVAR_POP</code> · <code>COVAR_SAMP</code> ·
+ <code>REGR_SLOPE</code> · <code>REGR_R2</code> · <code>REGR_INTERCEPT</code> ·
+ <code>MEDIAN</code> · <code>PERCENTILE_CONT</code><br>
+ 它们都是 Oracle / PostgreSQL 的函数，MySQL 至今没有。<br><br>
+ 所以相关系数只能手写：<code>r = (n·Σxy − Σx·Σy) / √[(n·Σx²−(Σx)²)(n·Σy²−(Σy)²)]</code><br><br>
+ <strong>MySQL 有的是：</strong><code>STDDEV_POP</code> / <code>STDDEV_SAMP</code> /
+ <code>VAR_POP</code> / <code>VAR_SAMP</code> —— 下一段说明怎么用它们做交叉验证。', warn=true) }}
+
+{{ M.note('交叉验证：用两条完全不同的数学路径算同一个 r',
+ '手写公式写错的概率不低，而算错的 r 仍然是一个"看起来合理的小数"，<strong>不会报错</strong>。
+ 所以页面上同时算了两遍：<br><br>
+ <strong>路径① 展开式</strong>：<code>(n·Σxy − Σx·Σy) / √[(n·Σx²−(Σx)²)(n·Σy²−(Σy)²)]</code><br>
+ <strong>路径② 定义式</strong>：<code>协方差 / (标准差 × 标准差)</code>，
+ 协方差按定义展开为 <code>(Σxy − Σx·Σy/n)/n</code>，
+ 标准差用 MySQL 内置的 <code>STDDEV_POP</code>。<br><br>
+ 两条路径的数学来源完全不同（一个是代数化简，一个是统计定义），
+ 结果必须吻合到小数点后 4 位。表格里的<strong>"公式校验"</strong>列就是这个判定 ——
+ 实测本项目 12 个作物<strong>全部一致</strong>。<br><br>
+ 这比"我觉得公式是对的"可靠得多，也是 <code>sql/05_tests.sql</code> 断言 10 的内容。') }}
+
+{{ M.note('为什么必须分作物算，以及为什么要做「相对单产」',
+ '<strong>① 跨作物直接算相关系数是错的。</strong>
+  番茄单产 5000+ kg/亩、大豆 200 kg/亩，而两者施肥量范围差不多。
+  混在一起算，作物间的<strong>量级差异</strong>会完全主导结果，
+  把施肥的真实影响淹没（辛普森悖论的另一种表现）。<br><br>
+  <strong>② 但分作物算又受限于样本量。</strong>
+  每个作物只有 10~50 条记录，r 的抽样波动可达 ±0.3 ——
+  表里某个作物 r 偏低，很可能只是小样本噪声，不是真的没影响。<br><br>
+  <strong>③ 解法：相对单产。</strong>
+  把每块地的单产除以<strong>该作物的平均单产</strong>，得到无量纲的"相对单产"，
+  就消除了量级差异，可以把全部 {{ pooled.sample_n }} 条记录放在一起算。
+  这是农学研究的常规做法，样本量充足、结果稳定。') }}
+
+{{ M.legacy57('
+<strong>很遗憾，这个问题 8.0 也没解决</strong> ——
+ 窗口函数改变的是"跨行计算"的能力，而相关系数需要的是"自定义聚合函数"，
+ 是另一个完全不同的方向。<br><br>
+ 8.0 新增的窗口函数（<code>ROW_NUMBER</code> / <code>LAG</code> /
+ <code>SUM() OVER</code> …）全都与这个需求无关。<br><br>
+ 所以从 5.7 到 8.0，这个查询<strong>一个字都不用改</strong> ——
+ 它本来就不依赖任何版本特有的能力。<br><br>
+ <strong>迁移版本不等于"所有查询都要改写"。</strong>
+ 判断哪些该改、哪些不该改，比机械地把所有 SQL 都换成新语法更重要。
+ 本项目 8 组分析里，相关系数、ROI、同比环比这三组在迁移中几乎没有改动。') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const SCATTER = {{ scatter | tojson }};
+const CROP_NAME = {{ (scatter_crop.full_name if scatter_crop else '') | tojson }};
+
+if (SCATTER.length) {
+    const pts = SCATTER.map(d => [Number(d.fert_per_mu), Number(d.yield_per_mu), d]);
+
+    /* 用最小二乘拟合一条趋势线。
+       相关系数是个抽象数字，一条趋势线能让"正相关"这件事直接看见 ——
+       不同统计素养的读者都能读懂。 */
+    const n = pts.length;
+    const sx = pts.reduce((s, p) => s + p[0], 0);
+    const sy = pts.reduce((s, p) => s + p[1], 0);
+    const sxy = pts.reduce((s, p) => s + p[0] * p[1], 0);
+    const sxx = pts.reduce((s, p) => s + p[0] * p[0], 0);
+    const slope = (n * sxy - sx * sy) / (n * sxx - sx * sx);
+    const intercept = (sy - slope * sx) / n;
+    const x0 = Math.min(...pts.map(p => p[0]));
+    const x1 = Math.max(...pts.map(p => p[0]));
+
+    initChart('scatterChart', chartOpt({
+        grid: { left: 68, right: 34, top: 30, bottom: 50, containLabel: true },
+        tooltip: {
+            trigger: 'item',
+            formatter: p => {
+                if (p.data[2] === undefined) return '';
+                const d = p.data[2];
+                return `${d.plot_no} · ${d.province} · ${d.season}<br/>
+                        施肥 <b>${fmt.num(p.data[0], 1)}</b> kg/亩<br/>
+                        单产 <b>${fmt.num(p.data[1], 1)}</b> kg/亩<br/>
+                        地力等级 ${['优', '中', '差'][d.fertility_level - 1] || '-'}`;
+            }
+        },
+        xAxis: Object.assign(valueAxis('施肥量 (kg/亩)'), { scale: true }),
+        yAxis: Object.assign(valueAxis('单产 (kg/亩)'), { scale: true }),
+        series: [
+            {
+                name: CROP_NAME, type: 'scatter', symbolSize: 9,
+                itemStyle: { color: 'rgba(46,125,50,.65)', borderColor: '#1b5e20' },
+                data: pts
+            },
+            {
+                /* 趋势线：不参与 tooltip、不可选中，纯粹做视觉参考 */
+                name: '趋势线', type: 'line', showSymbol: false, silent: true,
+                lineStyle: { color: '#ef6c00', width: 2, type: 'dashed' },
+                data: [[x0, slope * x0 + intercept], [x1, slope * x1 + intercept]],
+                tooltip: { show: false }
+            }
+        ]
+    }));
+}
+</script>
+{% endblock %}

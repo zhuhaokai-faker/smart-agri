@@ -1,0 +1,65 @@
+{% extends 'base.html' %}
+{% block page_title %}地块详情 · {{ plot.plot_no }}{% endblock %}
+{% block topbar_extra %}
+{% if current_user.can_edit %}
+<a href="{{ url_for('base_data.plot_edit', plot_id=plot.id) }}" class="btn btn-sm btn-success">
+  <i class="bi bi-pencil"></i> 编辑</a>
+{% endif %}
+{% endblock %}
+{% block content %}
+<div class="row g-3">
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">基本信息</div>
+      <div class="card-body">
+        <table class="table table-sm mb-0">
+          <tr><th style="width:110px">地块编号</th><td>{{ plot.plot_no }}</td></tr>
+          <tr><th>名称</th><td>{{ plot.name }}</td></tr>
+          <tr><th>所属农场</th><td>{{ plot.farm.name }}</td></tr>
+          <tr><th>地区</th><td>{{ plot.farm.region_name }}</td></tr>
+          <tr><th>气象区</th><td>{{ plot.farm.region_code }}</td></tr>
+          <tr><th>面积</th><td>{{ plot.area_mu | num(1) }} 亩</td></tr>
+          <tr><th>土壤类型</th><td>{{ plot.soil_name }}</td></tr>
+          <tr><th>灌溉方式</th><td>{{ plot.irrigation_name }}</td></tr>
+          <tr><th>地力等级</th><td>{{ plot.fertility_name }}</td></tr>
+          <tr><th>海拔</th><td>{{ plot.altitude_m }} m</td></tr>
+          <tr><th>经纬度</th><td>{{ plot.longitude }}, {{ plot.latitude }}</td></tr>
+          <tr><th>状态</th><td>{{ '在耕' if plot.status == 1 else '闲置' }}</td></tr>
+        </table>
+        {% if plot.remark %}<div class="note mt-3" style="font-size:12.5px">{{ plot.remark }}</div>{% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header">种植历史 <span class="sub">共 {{ plantings | length }} 个批次</span></div>
+      <div class="card-body p-0">
+        <div style="max-height:560px;overflow:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="sticky-top"><tr>
+            <th>批次</th><th>茬口</th><th>作物</th><th>播种</th><th>收获</th>
+            <th class="num">面积(亩)</th><th>状态</th><th></th>
+          </tr></thead>
+          <tbody>
+          {% for p in plantings %}
+          <tr>
+            <td style="font-size:12px">{{ p.batch_no }}</td>
+            <td>{{ p.season }}</td>
+            <td>{{ p.crop.name }}</td>
+            <td style="font-size:12.5px">{{ p.sow_date }}</td>
+            <td style="font-size:12.5px">{{ p.harvest_date or '-' }}</td>
+            <td class="num">{{ p.plant_area_mu | num(1) }}</td>
+            <td><span class="badge-soft {{ 'green' if p.status == 40 else 'blue' if p.status == 30
+                else 'orange' if p.status == 20 else 'gray' }}">{{ p.status_name }}</span></td>
+            <td><a href="{{ url_for('production.planting_detail', pid=p.id) }}"
+                   class="btn btn-sm btn-outline-secondary py-0 px-2">查看</a></td>
+          </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

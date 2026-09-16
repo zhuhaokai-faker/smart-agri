@@ -1,0 +1,167 @@
+{% extends 'base.html' %}
+{% import 'analytics/_macros.html' as M %}
+{% block page_title %}④ 投入产出比 (ROI){% endblock %}
+
+{% block content %}
+{{ M.question('每一块钱的投入能换回多少产值？哪些作物、哪些地块最赚钱？钱主要花在哪了？') }}
+
+<div class="row g-3 mb-3">
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">各作物投入产出比
+        <span class="sub">批次数 ≥ 5</span></div>
+      <div class="card-body"><div id="roiCropChart" class="chart chart-md"></div></div>
+    </div>
+  </div>
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header">各作物成本结构
+        <span class="sub">物资 / 人工 / 机械（万元）</span></div>
+      <div class="card-body"><div id="roiStructChart" class="chart chart-md"></div></div>
+    </div>
+  </div>
+</div>
+
+{% call M.table_wrap('地块级 ROI 排行 Top50', '按投入产出比降序', 480) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>茬口</th><th>地块</th><th>作物</th><th>省份</th>
+    <th class="num">亩均成本</th><th class="num">总成本</th><th class="num">产值</th>
+    <th class="num">利润</th><th class="num">投入产出比</th><th class="num">单产</th>
+  </tr></thead>
+  <tbody>
+  {% for r in ranking %}
+  <tr>
+    <td>{{ r.season }}</td>
+    <td>{{ r.plot_no }}</td>
+    <td>{{ r.crop_name }}</td>
+    <td>{{ r.province }}</td>
+    <td class="num">{{ r.cost_per_mu | num(0) }}</td>
+    <td class="num">{{ r.total_cost | num(0) }}</td>
+    <td class="num">{{ r.output_value | num(0) }}</td>
+    <td class="num" style="color:{{ '#2e7d32' if r.profit >= 0 else '#c62828' }}">
+      {{ r.profit | num(0) }}</td>
+    <td class="num"><span class="badge-soft {{ 'green' if (r.roi_ratio | float) >= 2
+        else 'orange' if (r.roi_ratio | float) >= 1 else 'red' }}">
+      {{ r.roi_ratio }}</span></td>
+    <td class="num">{{ r.yield_per_mu | num(1) }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{% call M.table_wrap('按作物汇总', '', 320) %}
+<table class="table table-sm table-hover mb-0">
+  <thead class="sticky-top"><tr>
+    <th>作物</th><th class="num">批次</th>
+    <th class="num">亩均成本</th><th class="num">亩均产值</th>
+    <th class="num">投入产出比</th><th class="num">利润率</th>
+  </tr></thead>
+  <tbody>
+  {% for r in by_crop %}
+  <tr>
+    <td>{{ r.crop_name }}</td>
+    <td class="num">{{ r.batch_cnt }}</td>
+    <td class="num">{{ r.cost_per_mu | num(0) }}</td>
+    <td class="num">{{ r.value_per_mu | num(0) }}</td>
+    <td class="num"><strong>{{ r.roi_ratio }}</strong></td>
+    <td class="num" style="color:{{ '#2e7d32' if (r.roi_pct or 0) >= 0 else '#c62828' }}">
+      {{ r.roi_pct | num(1) }}%</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endcall %}
+
+{{ M.sql_block(SQL.roi_ranking, '实际执行的 SQL —— 地块级投入产出比') }}
+
+{{ M.note('成本口径为什么必须"先各自聚合再 JOIN"',
+ '农资投入和农事记录来自两张表，一个批次有 5 条农资 + 8 条农事记录。<br><br>
+ 如果直接写：<br>
+ <code>FROM planting p LEFT JOIN input_cost i … LEFT JOIN farming_log l …</code><br><br>
+ 会产生 5×8 = 40 行的<strong>笛卡尔积</strong>，然后 <code>SUM(i.amount)</code>
+ 会把每条农资金额<strong>重复算 8 遍</strong>。<br><br>
+ 这个错误的危险之处是：<strong>它不报错</strong>，结果看起来只是"数字偏大"。
+ 正确做法是在子查询里各自聚合到 planting 粒度，再 JOIN
+ （见 <code>sql/02_views.sql</code> 的 <code>v_planting_cost</code>）。<br><br>
+ 项目里有一条断言专门守这个：<code>视图总成本 = 物资 + 人工 + 机械</code>。', warn=true) }}
+
+{{ M.note('怎么读投入产出比',
+ '· <strong>投入产出比 ≈ 2</strong>：投入 1 元赚回 2 元产值，扣除成本后净赚 1 元 —— 粮食作物的正常水平。<br>
+ · <strong>≈ 1</strong>：刚好打平甚至微亏。表里 <code>油菜 0.92</code> 就是这种情况，
+   <strong>这不是数据错误，是真实的农业经营现象</strong> —— 油菜的比较效益确实偏低，
+   很多地区靠补贴才愿意种。<br>
+ · <strong>越大越好吗？</strong> 不一定。高 ROI 往往伴随高风险（价格波动大、
+   技术门槛高）。设施蔬菜 ROI 高，但投入也高，一旦滞销亏损更严重。<br>
+   这页的价值在于把"感觉赚钱"变成"算清楚赚多少"。') }}
+
+{{ M.legacy57('
+<strong>这条查询在 5.7 和 8.0 上几乎完全相同</strong> ——
+ 它本质上是"聚合 + 连接"，不需要窗口函数。<br><br>
+ 8.0 唯一的增强是<strong>多了一列"同作物内排名"</strong>：
+<pre class="mb-2" style="background:#282c34;color:#abb2bf;padding:10px;border-radius:4px">RANK() OVER (PARTITION BY crop_id
+             ORDER BY output_value / total_cost DESC) AS rank_in_crop</pre>
+ 这一列在 5.7 里要用用户变量模拟，而且因为要按作物分区，复杂度不低。
+ 现在一个 <code>RANK()</code> 就够了。<br><br>
+ <strong>但本页真正的价值不在窗口函数</strong>，而在上面那条关于"成本口径"的说明 ——
+ 一对多 JOIN 导致金额重复累加是<strong>不会报错</strong>的错误，
+ 比语法问题危险得多。<br><br>
+ <strong>迁移版本时值得花时间的，恰恰是这类"数据正确性"问题，
+ 而不是把每个查询都套上窗口函数。</strong>') }}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const BY_CROP = {{ by_crop | tojson }};
+const RANK = {{ ranking | tojson }};
+
+initChart('roiCropChart', chartOpt({
+    grid: { left: 78, right: 46, top: 16, bottom: 22, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: p => `${p[0].name}<br/>投入产出比 <b>${p[0].value}</b>` },
+    xAxis: valueAxis(),
+    yAxis: Object.assign(axisStyle(), { data: BY_CROP.map(d => d.crop_name).reverse() }),
+    series: [{
+        type: 'bar', barMaxWidth: 15,
+        label: { show: true, position: 'right', fontSize: 11, formatter: '{c}' },
+        /* 用 1.0 作为分界线着色：≥1 是盈利，<1 是亏损。
+           颜色直接编码"赚还是亏"这个二元判断，比看数字快得多。 */
+        data: BY_CROP.slice().reverse().map(d => ({
+            value: d.roi_ratio,
+            itemStyle: {
+                color: Number(d.roi_ratio) >= 2 ? '#1b5e20'
+                     : Number(d.roi_ratio) >= 1 ? '#66bb6a' : '#e57373',
+                borderRadius: [0, 3, 3, 0]
+            }
+        }))
+    }]
+}));
+
+initChart('roiStructChart', chartOpt({
+    legend: { data: ['物资成本', '人工成本', '机械成本'], top: 0 },
+    grid: { left: 60, right: 30, top: 40, bottom: 30, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    xAxis: Object.assign(axisStyle(), {
+        data: RANK.length ? [...new Set(RANK.map(d => d.crop_name))] : [],
+        axisLabel: { rotate: 30, fontSize: 11, color: AGRI.gray }
+    }),
+    yAxis: valueAxis('万元'),
+    series: ['物资成本', '人工成本', '机械成本'].map((name, i) => ({
+        name, type: 'bar', stack: 'c', barMaxWidth: 32,
+        itemStyle: { color: ['#1565c0', '#ef6c00', '#7b8a7e'][i] },
+        data: (RANK.length ? [...new Set(RANK.map(d => d.crop_name))] : []).map(cn => {
+            /* 用该作物全部批次的成本结构占比 × 总成本 估算堆叠高度。
+               这里只是概览图；精确的成本结构在分析 ④ 的 SQL 结果里。 */
+            const rows = RANK.filter(r => r.crop_name === cn);
+            const total = rows.reduce((s, r) => s + Number(r.total_cost), 0) / 10000;
+            const key = ['material_pct', 'labor_pct', 'machine_pct'][i];
+            const avgPct = rows.length
+                ? rows.reduce((s, r) => s + Number(r[key] || 0), 0) / rows.length : 0;
+            return +(total * avgPct / 100).toFixed(1);
+        })
+    }))
+}));
+</script>
+{% endblock %}

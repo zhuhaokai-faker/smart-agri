@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ app_name }}{% endblock %}</title>
+{# ⚠️ 所有静态资源都从本地 vendor/ 加载，不用 CDN。
+   原因：面试演示常常在没有外网的环境（会议室、客户现场）进行，
+   依赖 CDN 的页面会变成一堆没有样式的裸 HTML，直接毁掉演示效果。 #}
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/bootstrap-icons.min.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/highlight-sql.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- ===================== 侧边栏 ===================== -->
+<nav class="sidebar">
+  <div class="brand">
+    智慧农业分析平台
+    <small>SMART AGRICULTURE ANALYTICS</small>
+  </div>
+
+  <ul class="nav flex-column">
+    <li class="nav-section">总览</li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'dashboard.index' }}"
+           href="{{ url_for('dashboard.index') }}">
+      <i class="bi bi-speedometer2"></i>数据看板</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'map.index' }}"
+           href="{{ url_for('map.index') }}">
+      <i class="bi bi-geo-alt"></i>地块地图</a></li>
+
+    <li class="nav-section">深度分析 · MySQL 8.0</li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.gdd' }}"
+           href="{{ url_for('analytics.gdd') }}">
+      <i class="bi bi-thermometer-half"></i>① 有效积温分析</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.yoy_mom' }}"
+           href="{{ url_for('analytics.yoy_mom') }}">
+      <i class="bi bi-graph-up-arrow"></i>② 同比与环比</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.correlation' }}"
+           href="{{ url_for('analytics.correlation') }}">
+      <i class="bi bi-bullseye"></i>③ 单产影响因子</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.roi' }}"
+           href="{{ url_for('analytics.roi') }}">
+      <i class="bi bi-cash-coin"></i>④ 投入产出比</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.topn' }}"
+           href="{{ url_for('analytics.topn') }}">
+      <i class="bi bi-trophy"></i>⑤ 分组排行榜</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.abc' }}"
+           href="{{ url_for('analytics.abc') }}">
+      <i class="bi bi-bar-chart-steps"></i>⑥ ABC 帕累托</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.cohort' }}"
+           href="{{ url_for('analytics.cohort') }}">
+      <i class="bi bi-people"></i>⑦ 同期群留存</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'analytics.drought' }}"
+           href="{{ url_for('analytics.drought') }}">
+      <i class="bi bi-droplet-half"></i>⑧ 连续干旱预警</a></li>
+
+    <li class="nav-section">业务管理</li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'base_data.plot_list' }}"
+           href="{{ url_for('base_data.plot_list') }}">
+      <i class="bi bi-grid-3x3-gap"></i>地块管理</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'base_data.crop_list' }}"
+           href="{{ url_for('base_data.crop_list') }}">
+      <i class="bi bi-flower1"></i>作物品种</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'base_data.farm_list' }}"
+           href="{{ url_for('base_data.farm_list') }}">
+      <i class="bi bi-house-door"></i>农场档案</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'production.planting_list' }}"
+           href="{{ url_for('production.planting_list') }}">
+      <i class="bi bi-calendar3"></i>种植批次</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'production.yield_list' }}"
+           href="{{ url_for('production.yield_list') }}">
+      <i class="bi bi-basket"></i>产量记录</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'production.farming_log_list' }}"
+           href="{{ url_for('production.farming_log_list') }}">
+      <i class="bi bi-clipboard-check"></i>农事作业</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'weather.index' }}"
+           href="{{ url_for('weather.index') }}">
+      <i class="bi bi-cloud-sun"></i>气象数据</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'audit.index' }}"
+           href="{{ url_for('audit.index') }}">
+      <i class="bi bi-journal-text"></i>操作审计</a></li>
+    <li><a class="nav-link {{ 'active' if request.endpoint == 'audit.json_table' }}"
+           href="{{ url_for('audit.json_table') }}">
+      <i class="bi bi-braces"></i>字段级变更 <span class="sql-tag ms-1">8.0</span></a></li>
+
+    {# 用户管理只对管理员显示。
+       注意：模板层隐藏**不是**安全边界 —— 直接访问 /admin/users 才是真正的入口，
+       那里有 @admin_required 拦着。这里隐藏只是"别让无关的人看到这个菜单项"。 #}
+    {% if current_user.role == 1 %}
+    <li class="nav-section">系统管理</li>
+    <li><a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('admin.') }}"
+           href="{{ url_for('admin.user_list') }}">
+      <i class="bi bi-people-fill"></i>用户管理</a></li>
+    {% endif %}
+  </ul>
+</nav>
+
+<!-- ===================== 主区域 ===================== -->
+<div class="main">
+  <div class="topbar">
+    <h6 class="page-title">{% block page_title %}{% endblock %}</h6>
+    <div class="d-flex align-items-center gap-3">
+      {% block topbar_extra %}{% endblock %}
+      <div class="dropdown">
+        <a class="d-flex align-items-center gap-2 text-decoration-none dropdown-toggle"
+           style="color:#3a4a3c" href="#" data-bs-toggle="dropdown">
+          <i class="bi bi-person-circle fs-5"></i>
+          <div style="line-height:1.15">
+            <div style="font-size:13px">{{ current_user.real_name or current_user.username }}</div>
+            <div style="font-size:11px;color:#7b8a7e">{{ current_user.role_name }}</div>
+          </div>
+        </a>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="{{ url_for('auth.change_password') }}">
+            <i class="bi bi-key me-2"></i>修改密码</a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item text-danger" href="{{ url_for('auth.logout') }}">
+            <i class="bi bi-box-arrow-right me-2"></i>退出登录</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+        <div class="alert alert-{{ category }} alert-dismissible fade show py-2" role="alert">
+          {{ msg }}
+          <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+        </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='vendor/bootstrap.bundle.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/echarts.min.js') }}"></script>
+<script src="{{ url_for('static', filename='vendor/highlight.min.js') }}"></script>
+<script src="{{ url_for('static', filename='js/app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

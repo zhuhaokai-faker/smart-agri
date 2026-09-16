@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% from '_pager.html' import pager %}
+{% from '_yield_actions.html' import yield_actions with context %}
+{% block page_title %}产量记录{% endblock %}
+{% block topbar_extra %}
+{% if current_user.can_edit %}
+<a href="{{ url_for('production.yield_create') }}" class="btn btn-sm btn-success">
+  <i class="bi bi-plus-lg"></i> 录入产量</a>
+{% endif %}
+{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-header d-flex align-items-center flex-wrap gap-2">
+    <span>产量记录 <span class="sub">{{ pagination.total }} 条</span></span>
+    <form class="ms-auto d-flex gap-2" method="get">
+      <select name="crop_id" class="form-select form-select-sm" style="width:150px"
+              onchange="this.form.submit()">
+        <option value="">全部作物</option>
+        {% for c in crops %}
+        <option value="{{ c.id }}" {{ 'selected' if c.id == crop_id }}>{{ c.name }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+  <div class="card-body p-0">
+    <table class="table table-sm table-hover mb-0">
+      <thead><tr>
+        <th>收获日期</th><th>地块</th><th>作物</th>
+        <th class="num">收获面积(亩)</th><th class="num">总产量(kg)</th>
+        <th class="num">单产(kg/亩)</th><th>等级</th>
+        <th class="num">单价(元/kg)</th><th class="num">产值(元)</th>
+        {# 只读角色看不到任何操作，整列不渲染 —— 留一个空列反而更奇怪 #}
+        {% if current_user.can_edit %}<th class="text-end">操作</th>{% endif %}
+      </tr></thead>
+      <tbody>
+      {% for y in pagination.items %}
+      <tr>
+        <td>{{ y.harvest_date }}</td>
+        <td>{{ y.plot.plot_no }}</td>
+        <td>{{ y.crop.name }}</td>
+        <td class="num">{{ y.harvest_area_mu | num(1) }}</td>
+        <td class="num">{{ y.yield_kg | num(0) }}</td>
+        <td class="num"><strong>{{ y.yield_per_mu | num(1) }}</strong></td>
+        <td><span class="badge-soft {{ 'green' if y.grade == 1 else 'blue' if y.grade == 2 else 'gray' }}">
+            {{ y.grade_name }}</span></td>
+        <td class="num">{{ y.unit_price | num(2) }}</td>
+        <td class="num">{{ y.output_value | num(0) }}</td>
+        {% if current_user.can_edit %}
+        <td class="text-end text-nowrap">{{ yield_actions(y) }}</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{{ pager(pagination, 'production.yield_list', {'crop_id': crop_id or ''}) }}
+
+<div class="note mt-3">
+  <h6><i class="bi bi-calculator"></i> 单产与产值是数据库生成列</h6>
+  <code>yield_per_mu</code>（单产）和 <code>output_value</code>（产值）
+  是 <strong>STORED 生成列</strong>，由 MySQL 在写入时自动计算并物化存储。<br>
+  好处是<strong>任何写入路径都保证一致</strong> —— 应用写入、运维直接改库、
+  批量导入，都不可能算错或漏更新。<br>
+  选 <code>STORED</code> 而非 <code>VIRTUAL</code> 是因为这两个字段要被高频聚合，
+  物化后才能进覆盖索引（<code>Using index</code>，完全不回表）。
+</div>
+{% endblock %}

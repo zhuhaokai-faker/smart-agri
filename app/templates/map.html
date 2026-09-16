@@ -1,0 +1,306 @@
+{% extends 'base.html' %}
+{% block page_title %}地块地图{% endblock %}
+
+{% block content %}
+<div class="row g-3 mb-3">
+  <div class="col-lg-9">
+    <div class="card">
+      <div class="card-header d-flex align-items-center">
+        <span>地块单产热力图</span>
+        <div class="ms-auto d-flex align-items-center gap-2">
+          <label class="form-label mb-0" style="font-size:12px;color:#7b8a7e">着色指标</label>
+          <select id="metricSel" class="form-select form-select-sm" style="width:150px"
+                  onchange="recolor()">
+            <option value="yield_per_mu">单产 (kg/亩)</option>
+            <option value="output_per_mu">亩均产值 (元)</option>
+            <option value="total_area_mu">地块面积 (亩)</option>
+            <option value="record_cnt">收获次数</option>
+          </select>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="plotMap"></div>
+        <div class="map-legend">
+          <span id="legendMin">低</span>
+          <span class="bar"></span>
+          <span id="legendMax">高</span>
+          <span class="ms-3" style="color:#9aa79c">
+            鼠标悬停查看地块详情 · 滚轮缩放 · 拖拽平移
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-3">
+    <div class="card h-100">
+      <div class="card-header">图例与统计</div>
+      <div class="card-body">
+        <div id="mapStats" class="mb-3"></div>
+        <div class="mb-3">
+          <div style="font-size:12px;color:#7b8a7e;margin-bottom:6px">地力等级</div>
+          <div style="font-size:12.5px;line-height:2">
+            <span class="legend-dot" style="background:#1b5e20"></span>优等地<br>
+            <span class="legend-dot" style="background:#66bb6a"></span>中等地<br>
+            <span class="legend-dot" style="background:#c8e6c9"></span>差等地
+          </div>
+        </div>
+        <div class="note" style="font-size:12px">
+          地块边界由 <code>scripts/gen_geojson.py</code> 合成，
+          <strong>不需要任何外部矢量数据</strong>。<br>
+          若有自己的 shp，用 <code>scripts/from_shp.py</code> 一键替换。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3">
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">单产分布</div>
+      <div class="card-body"><div id="distChart" class="chart chart-sm"></div></div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card">
+      <div class="card-header">各农场平均单产</div>
+      <div class="card-body"><div id="farmChart" class="chart chart-sm"></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="note mt-3">
+  <h6><i class="bi bi-diagram-3"></i> 前后端如何协作</h6>
+  地图需要两类数据，本项目刻意把它们<strong>分开</strong>：<br>
+  <strong>① 几何边界（静态）</strong> —— <code>static/geo/plots.geojson</code>，
+  由脚本生成一次，改了地块才需要重新生成。<br>
+  <strong>② 业务指标（动态）</strong> —— <code>/map/api/plot-metrics</code> 接口，
+  每次查询都取最新的单产/产值/地力。<br><br>
+  为什么合并成一个文件不好：那样每换一个着色指标（单产→产值→面积）
+  都要重新生成一遍 GeoJSON。<br>
+  拆开之后，前端拿到几何和指标两个数据集后按 <code>plot_no</code> 关联，
+  <strong>切换指标只是换一个字典取值，零额外请求</strong>。<br><br>
+  接口返回的是 <code>{plot_no: {...}}</code> 的<strong>字典而不是数组</strong> ——
+  前端给 60 个多边形着色时如果是数组就要 O(n) 查找，
+  字典是 O(1) 直取。n=60 时无所谓，但 n=10 万时这个习惯决定成败。
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let GEO = null, METRICS = {}, mapChart = null;
+
+/* ---------------------------------------------------------------- 着色比例尺
+   把数值映射到 [0,1] 区间，再用绿色渐变取色。
+   用分位数（quantile）而不是线性映射：地块单产的分布是右偏的，
+   线性映射会让绝大多数地块挤在浅色端，看不出差异。 */
+function makeScale(values) {
+    const sorted = values.slice().sort((a, b) => a - b);
+    return function (v) {
+        if (!sorted.length) return 0;
+        let lo = 0, hi = sorted.length - 1;
+        while (lo < hi) {           // 二分找分位
+            const mid = (lo + hi) >> 1;
+            if (sorted[mid] < v) lo = mid + 1; else hi = mid;
+        }
+        return sorted.length > 1 ? lo / (sorted.length - 1) : 0.5;
+    };
+}
+
+/* 绿色渐变：深绿=高值。农业数据用绿色系最自然。
+   注意亮度跨度要够（这里从 #e8f5e9 到 #1b5e20），
+   否则深色地块之间分不出来。 */
+function greenRamp(t) {
+    const stops = [[232, 245, 233], [200, 230, 201], [165, 214, 167],
+                   [129, 199, 132], [102, 187, 106], [76, 175, 80],
+                   [67, 160, 71], [56, 142, 60], [46, 125, 50], [27, 94, 32]];
+    const i = Math.min(stops.length - 1, Math.max(0, Math.round(t * (stops.length - 1))));
+    const c = stops[i];
+    return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function currentMetric() {
+    return document.getElementById('metricSel').value;
+}
+
+function recolor() {
+    if (!mapChart || !GEO) return;
+    const metric = currentMetric();
+    const items = GEO.features.map(f => {
+        const m = METRICS[f.properties.plot_no];
+        return { f, v: m ? Number(m[metric] || 0) : null, m };
+    });
+    const valid = items.filter(x => x.v !== null).map(x => x.v);
+    const scale = makeScale(valid);
+
+    // 更新色阶图例的数值范围
+    document.getElementById('legendMin').textContent =
+        fmt.num(Math.min(...valid), 0);
+    document.getElementById('legendMax').textContent =
+        fmt.num(Math.max(...valid), 0);
+
+    mapChart.setOption({
+        series: [{
+            data: items.map(x => ({
+                name: x.f.properties.plot_no,
+                value: x.v === null ? 0 : x.v,
+                itemStyle: {
+                    /* 没有指标数据的地块用浅灰 ——
+                       和"低值"（浅绿）区分开，
+                       否则会被误读成"这块地产量很低"。 */
+                    areaColor: x.v === null ? '#e0e0e0'
+                              : greenRamp(scale(x.v)),
+                    borderColor: '#ffffff',
+                    borderWidth: 0.8
+                },
+                raw: x.f.properties, metricData: x.m
+            }))
+        }]
+    }, false);
+}
+
+async function boot() {
+    /* 两个数据源并行请求 —— 几何和指标互不依赖，
+       串行 await 会白白多等一个 RTT。 */
+    const [geoRes, metRes] = await Promise.all([
+        fetch("{{ url_for('static', filename='geo/plots.geojson') }}"),
+        fetch("{{ url_for('map.plot_metrics') }}")
+    ]);
+    GEO = await geoRes.json();
+    METRICS = await metRes.json();
+
+    echarts.registerMap('plots', GEO);
+    mapChart = echarts.init(document.getElementById('plotMap'));
+
+    const metric = currentMetric();
+    const vals = Object.values(METRICS).map(m => Number(m[metric] || 0));
+    const scale = makeScale(vals);
+
+    mapChart.setOption({
+        tooltip: {
+            trigger: 'item',
+            backgroundColor: 'rgba(31,45,36,.95)',
+            borderWidth: 0,
+            textStyle: { color: '#fff', fontSize: 12 },
+            formatter: p => {
+                const r = p.data.raw, m = p.data.metricData;
+                if (!r) return p.name;
+                return `<b>${r.plot_no}</b> · ${r.name}<br/>
+                        ${r.farm}<br/>
+                        <hr style="margin:5px 0;border-color:#4b5263"/>
+                        面积 ${fmt.num(r.area_mu, 1)} 亩<br/>
+                        地力 ${['优','中','差'][r.fertility_level - 1] || '-'}
+                        · ${['雨养','漫灌','喷灌','滴灌'][r.irrigation_type - 1] || '-'}<br/>
+                        ${m ? `最新作物 <b>${m.crop_name}</b><br/>
+                               单产 <b>${fmt.num(m.yield_per_mu, 1)}</b> kg/亩<br/>
+                               亩均产值 <b>${fmt.num(m.output_per_mu, 0)}</b> 元<br/>
+                               收获 ${m.record_cnt} 次`
+                            : '<i style="color:#9aa79c">暂无产量数据</i>'}`
+            }
+        },
+        toolbox: {
+            right: 12, top: 8, feature: { restore: { title: '重置视图' } }
+        },
+        series: [{
+            type: 'map', map: 'plots', roam: true,
+            /* 因为地块分散在 5 个省，全国跨度太大，
+               初始视图聚焦到有数据的位置。ECharts 会根据 GeoJSON
+               自动计算 bbox，这里额外留 8% 边距。 */
+            layoutCenter: ['50%', '50%'],
+            layoutSize: '96%',
+            emphasis: {
+                itemStyle: { areaColor: '#ffb74d', borderColor: '#e65100', borderWidth: 1.6 },
+                label: { show: true, fontSize: 10, color: '#3a4a3c' }
+            },
+            select: { itemStyle: { areaColor: '#ffcc80' } },
+            data: []
+        }]
+    });
+
+    recolor();
+    mapChart.on('click', p => {
+        if (p.data && p.data.raw) {
+            window.location.href = `/plots?q=${encodeURIComponent(p.data.raw.plot_no)}`;
+        }
+    });
+
+    renderStats();
+    renderDist(vals);
+    renderFarm();
+}
+
+function renderStats() {
+    const m = Object.values(METRICS);
+    const withData = m.filter(x => x.record_cnt > 0);
+    const avg = withData.length
+        ? withData.reduce((s, x) => s + x.yield_per_mu, 0) / withData.length : 0;
+    document.getElementById('mapStats').innerHTML = `
+        <div style="font-size:12.5px;line-height:2.1">
+          <div>地块总数 <strong class="float-end">${m.length}</strong></div>
+          <div>有产量数据 <strong class="float-end">${withData.length}</strong></div>
+          <div>平均单产 <strong class="float-end">${fmt.num(avg, 1)} kg/亩</strong></div>
+        </div>`;
+}
+
+function renderDist(vals) {
+    /* 手工分箱做直方图。
+       ECharts 没有内置直方图，手动分箱比引入统计库轻量得多。 */
+    const bins = 10;
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const step = (hi - lo) / bins || 1;
+    const counts = new Array(bins).fill(0);
+    vals.forEach(v => {
+        const i = Math.min(bins - 1, Math.floor((v - lo) / step));
+        counts[i]++;
+    });
+    initChart('distChart', chartOpt({
+        grid: { left: 46, right: 20, top: 20, bottom: 34, containLabel: true },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+            formatter: p => `${p[0].name}<br/>${p[0].value} 块地` },
+        xAxis: Object.assign(axisStyle(), {
+            data: counts.map((_, i) => fmt.num(lo + step * i, 0)),
+            axisLabel: { rotate: 40, fontSize: 10, color: AGRI.gray }
+        }),
+        yAxis: valueAxis('地块数'),
+        series: [{ type: 'bar', barMaxWidth: 26,
+            itemStyle: { color: '#66bb6a', borderRadius: [3, 3, 0, 0] },
+            data: counts }]
+    }));
+}
+
+function renderFarm() {
+    const byFarm = {};
+    Object.values(METRICS).forEach(m => {
+        if (!m.farm_name) return;
+    });
+    // 农场维度需要 GeoJSON 里的 farm 字段
+    const agg = {};
+    GEO.features.forEach(f => {
+        const m = METRICS[f.properties.plot_no];
+        if (!m) return;
+        const k = f.properties.farm;
+        (agg[k] = agg[k] || []).push(m.yield_per_mu);
+    });
+    const names = Object.keys(agg);
+    const avgs = names.map(k => +(agg[k].reduce((a, b) => a + b, 0) / agg[k].length).toFixed(1));
+
+    initChart('farmChart', chartOpt({
+        grid: { left: 56, right: 30, top: 16, bottom: 58, containLabel: true },
+        tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+        xAxis: Object.assign(axisStyle(), {
+            data: names,
+            axisLabel: { rotate: 24, fontSize: 10, color: AGRI.gray }
+        }),
+        yAxis: valueAxis('单产 (kg/亩)'),
+        series: [{ type: 'bar', barMaxWidth: 40,
+            itemStyle: { color: '#43a047', borderRadius: [3, 3, 0, 0] },
+            label: { show: true, position: 'top', fontSize: 10 },
+            data: avgs }]
+    }));
+}
+
+boot();
+window.addEventListener('resize', () => { if (mapChart) mapChart.resize(); });
+</script>
+{% endblock %}

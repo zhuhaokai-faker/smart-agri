@@ -1,0 +1,239 @@
+{% extends 'base.html' %}
+{% block page_title %}数据看板{% endblock %}
+
+{% block content %}
+
+<!-- ===================== KPI ===================== -->
+<div class="row g-3 mb-3">
+  {% set kpis = [
+    ('农场 / 合作社', summary.farm_cnt, '家', 'bi-house-door', ''),
+    ('地块总数', summary.plot_cnt, '块', 'bi-grid-3x3-gap', ''),
+    ('耕地面积', summary.total_area_mu, '亩', 'bi-bounding-box', 'num'),
+    ('累计产量', summary.total_yield_ton, '吨', 'bi-basket', 'num'),
+    ('累计产值', summary.total_value_wan, '万元', 'bi-cash-coin', 'num'),
+    ('平均单产', summary.avg_yield_per_mu, 'kg/亩', 'bi-speedometer', 'num'),
+  ] %}
+  {% for label, val, unit, icon, cls in kpis %}
+  <div class="col-6 col-lg-2">
+    <div class="kpi">
+      <div class="label"><i class="bi {{ icon }}"></i>{{ label }}</div>
+      <div class="value {{ cls }}">{{ val }}<span class="unit">{{ unit }}</span></div>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+
+<!-- ===================== 趋势 + 作物占比 ===================== -->
+<div class="row g-3 mb-3">
+  <div class="col-lg-8">
+    <div class="card h-100">
+      <div class="card-header">月度产量与产值趋势
+        <span class="sub">双轴：柱=产量(吨) 线=产值(万元)</span></div>
+      <div class="card-body">
+        <div id="trendChart" class="chart chart-lg"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="card h-100">
+      <div class="card-header">作物产量占比</div>
+      <div class="card-body">
+        <div id="cropChart" class="chart chart-lg"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 单产排行 + 地区 ===================== -->
+<div class="row g-3 mb-3">
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">单产 Top10 地块
+        <span class="sub">按累计加权单产排名</span></div>
+      <div class="card-body">
+        <div id="topChart" class="chart chart-md"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-6">
+    <div class="card h-100">
+      <div class="card-header">地区产量分布</div>
+      <div class="card-body">
+        <div id="regionChart" class="chart chart-md"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 成本结构 + ABC ===================== -->
+<div class="row g-3">
+  <div class="col-lg-7">
+    <div class="card h-100">
+      <div class="card-header">各作物成本结构
+        <span class="sub">堆叠：物资 / 人工 / 机械（万元）</span></div>
+      <div class="card-body">
+        <div id="costChart" class="chart chart-md"></div>
+      </div>
+    </div>
+  </div>
+  <div class="col-lg-5">
+    <div class="card h-100">
+      <div class="card-header">产量 ABC 帕累托
+        <span class="sub">多少比例的地块贡献了多少产量</span></div>
+      <div class="card-body">
+        <div id="abcChart" class="chart chart-md"></div>
+        <div class="note mt-2" style="font-size:12.5px">
+          A 类 <strong>{{ abc[0].plot_cnt if abc else 0 }}</strong> 块地
+          （占 {{ abc[0].plot_pct if abc else 0 }}%）
+          贡献了 <strong>{{ abc[0].yield_pct if abc else 0 }}%</strong> 的产量
+          —— 典型的帕累托效应。管理资源应优先投向 A 类地块。
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* 数据由后端一次性注入。在模板里只做"取值 + 配置图表"，
+   不做数据加工 —— 模板里写业务逻辑是后期最难维护的代码。 */
+const TREND  = {{ trend | tojson }};
+const CROPS  = {{ crop_share | tojson }};
+const REGION = {{ regions | tojson }};
+const TOP    = {{ top_plots | tojson }};
+const COST   = {{ cost | tojson }};
+const ABC    = {{ abc | tojson }};
+
+/* ---------------- 月度趋势：柱(产量) + 线(产值) 双轴 ---------------- */
+initChart('trendChart', chartOpt({
+    tooltip: { trigger: 'axis', axisPointer: { type: 'cross' } },
+    legend: { data: ['产量(吨)', '产值(万元)'], top: 4 },
+    xAxis: Object.assign(axisStyle(), {
+        data: TREND.map(d => d.harvest_month.slice(0, 7)),
+        axisLabel: { rotate: 45, color: AGRI.gray, fontSize: 10 }
+    }),
+    yAxis: [
+        valueAxis('产量(吨)'),
+        Object.assign(valueAxis('产值(万元)'), {
+            splitLine: { show: false },
+            axisLabel: { color: AGRI.gray, fontSize: 11 }
+        })
+    ],
+    series: [
+        {
+            name: '产量(吨)', type: 'bar', barMaxWidth: 26,
+            itemStyle: { color: '#66bb6a', borderRadius: [3, 3, 0, 0] },
+            data: TREND.map(d => d.yield_ton)
+        },
+        {
+            name: '产值(万元)', type: 'line', yAxisIndex: 1, smooth: true,
+            symbolSize: 6, lineStyle: { width: 2.5, color: '#ef6c00' },
+            itemStyle: { color: '#ef6c00' },
+            data: TREND.map(d => d.value_wan)
+        }
+    ]
+}));
+
+/* ---------------- 作物占比：玫瑰图 ----------------
+   用玫瑰图（半径也编码数值）而不是普通饼图：
+   作物产量的差距很大（白菜/番茄几百万 kg vs 棉花十几万 kg），
+   普通饼图里小扇区几乎看不见，玫瑰图能把差距视觉化。 */
+initChart('cropChart', chartOpt({
+    tooltip: { trigger: 'item', formatter: p => `${p.name}<br/>${fmt.num(p.value, 0)} 吨 (${p.percent}%)` },
+    legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 11 } },
+    series: [{
+        type: 'pie', roseType: 'radius', radius: ['22%', '68%'], center: ['50%', '46%'],
+        itemStyle: { borderColor: '#fff', borderWidth: 2 },
+        label: { fontSize: 10, color: AGRI.text },
+        data: CROPS.map(d => ({ name: d.crop_name, value: d.yield_ton }))
+    }]
+}));
+
+/* ---------------- 单产 Top10：横向柱状 ---------------- */
+const topSorted = TOP.slice().sort((a, b) => a.yield_per_mu - b.yield_per_mu);
+initChart('topChart', chartOpt({
+    grid: { left: 96, right: 60, top: 16, bottom: 24, containLabel: true },
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+        formatter: p => `${p[0].name}<br/>单产 ${fmt.num(p[0].value, 1)} kg/亩` },
+    xAxis: valueAxis(),
+    yAxis: Object.assign(axisStyle(), { data: topSorted.map(d => d.plot_no) }),
+    series: [{
+        type: 'bar', barMaxWidth: 16,
+        itemStyle: { borderRadius: [0, 3, 3, 0] },
+        /* 按地力等级着色：优=深绿 中=中绿 差=浅绿。
+           用同一色系的深浅表达"程度差异"，比三种对比色更克制，
+           也更符合"这是同一维度上的高低"这个语义。
+           颜色写在每个数据项上（而不是全局 color 数组），
+           这样图例和 Tooltip 也能正确取到单个条目的颜色。 */
+        data: topSorted.map(d => ({
+            value: d.yield_per_mu,
+            itemStyle: {
+                color: Number(d.fertility_level) === 1 ? '#1b5e20'
+                     : Number(d.fertility_level) === 2 ? '#43a047' : '#a5d6a7'
+            }
+        })),
+        label: { show: true, position: 'right', fontSize: 10, color: AGRI.gray,
+                 formatter: p => fmt.num(p.value, 0) }
+    }]
+}));
+
+/* ---------------- 地区分布：柱 + 折线（单产） ---------------- */
+initChart('regionChart', chartOpt({
+    legend: { data: ['产量(吨)', '单产(kg/亩)'], top: 4 },
+    xAxis: Object.assign(axisStyle(), {
+        data: REGION.map(d => d.province),
+        axisLabel: { color: AGRI.gray, fontSize: 11 }
+    }),
+    yAxis: [valueAxis('产量(吨)'),
+            Object.assign(valueAxis('单产'), { splitLine: { show: false } })],
+    series: [
+        { name: '产量(吨)', type: 'bar', barMaxWidth: 40,
+          itemStyle: { color: '#43a047', borderRadius: [3, 3, 0, 0] },
+          data: REGION.map(d => d.yield_ton) },
+        { name: '单产(kg/亩)', type: 'line', yAxisIndex: 1, smooth: true,
+          symbolSize: 7, lineStyle: { width: 2.5, color: '#f57c00' },
+          itemStyle: { color: '#f57c00' },
+          data: REGION.map(d => d.yield_per_mu) }
+    ]
+}));
+
+/* ---------------- 成本结构：堆叠柱 ---------------- */
+initChart('costChart', chartOpt({
+    legend: { data: ['物资成本', '人工成本', '机械成本'], top: 4 },
+    xAxis: Object.assign(axisStyle(), {
+        data: COST.map(d => d.crop_name),
+        axisLabel: { rotate: 30, color: AGRI.gray, fontSize: 11 }
+    }),
+    yAxis: valueAxis('万元'),
+    series: [
+        { name: '物资成本', type: 'bar', stack: 'c', barMaxWidth: 34,
+          itemStyle: { color: '#1565c0' }, data: COST.map(d => d.material_wan) },
+        { name: '人工成本', type: 'bar', stack: 'c',
+          itemStyle: { color: '#ef6c00' }, data: COST.map(d => d.labor_wan) },
+        { name: '机械成本', type: 'bar', stack: 'c',
+          itemStyle: { color: '#7b8a7e', borderRadius: [3, 3, 0, 0] },
+          data: COST.map(d => d.machine_wan) }
+    ]
+}));
+
+/* ---------------- ABC 帕累托 ---------------- */
+initChart('abcChart', chartOpt({
+    grid: { left: 60, right: 30, top: 24, bottom: 30, containLabel: true },
+    tooltip: { trigger: 'axis' },
+    xAxis: Object.assign(axisStyle(), { data: ABC.map(d => d.abc_class + ' 类') }),
+    yAxis: valueAxis('占比(%)', v => v + '%'),
+    series: [
+        { name: '地块占比', type: 'bar', barMaxWidth: 44,
+          itemStyle: { color: '#90caf9', borderRadius: [3, 3, 0, 0] },
+          label: { show: true, position: 'top', fontSize: 11, formatter: '{c}%' },
+          data: ABC.map(d => d.plot_pct) },
+        { name: '产量占比', type: 'bar', barMaxWidth: 44,
+          itemStyle: { color: '#2e7d32', borderRadius: [3, 3, 0, 0] },
+          label: { show: true, position: 'top', fontSize: 11, formatter: '{c}%' },
+          data: ABC.map(d => d.yield_pct) }
+    ]
+}));
+</script>
+{% endblock %}
