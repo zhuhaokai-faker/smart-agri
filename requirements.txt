@@ -31,6 +31,29 @@ Flask-SQLAlchemy==3.1.1
 Flask-Login==0.6.3
 PyMySQL==1.2.0
 
+# Production WSGI server. Used by the Windows deployment path only
+# (deploy/serve_cluster.py launches N of these behind nginx); the dev path
+# in run.py keeps using Flask's built-in server, and the Linux/container
+# path uses gunicorn instead.
+#
+# Why it is required rather than optional: Flask's built-in server is
+# single-process, and the GIL caps a single process at roughly one core.
+# Measured on 32 concurrent clients against this app:
+#     1 process   176 req/s
+#     2 processes 278 req/s
+#     4 processes 425 req/s
+# while pure static files hit 1126 req/s through the same Flask app and
+# raw MySQL sustained 5000+ queries/s - so neither Flask nor the database
+# is the ceiling; the single GIL is. Multi-process is the fix, and
+# waitress is the only real WSGI server that runs on Windows (gunicorn
+# needs os.fork).
+#
+# Note: deploy/waitress_worker.py calls waitress.serve() directly instead
+# of using the waitress-serve CLI, because the CLI has no flag for
+# trusted_proxy - and without it waitress strips the X-Forwarded-For
+# header sent by nginx, silently degrading every audit_log.ip to 127.0.0.1.
+waitress==3.0.2
+
 # CSRF protection. NOT optional once this app is reachable from the public
 # internet (see tunnel scripts) - without it, any page a logged-in admin
 # visits can silently POST to /plantings/<id>/status or /yields/<id>/delete

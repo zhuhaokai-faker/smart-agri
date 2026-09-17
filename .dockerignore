@@ -1,0 +1,41 @@
+# =============================================================================
+#  构建上下文里不需要的东西
+# =============================================================================
+#  这个文件不只是"省体积"—— 漏掉某些条目会构建出一个**坏的**镜像，
+#  下面标了 ⚠️ 的两条属于这一类。
+# =============================================================================
+
+# ⚠️ 必须排除。宿主机这份是 **Windows** venv（Scripts/ 而不是 bin/），
+#    它要是被 COPY 进镜像，会把镜像里刚建好的 Linux venv 覆盖掉，
+#    之后报错会指向一堆与问题无关的地方。Dockerfile 里有一句断言专门盯着它。
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ⚠️ 数据库口令。容器靠 --env-file 在**运行**时注入，绝不烘焙进镜像 ——
+#    这个镜像会被 docker save 成 tar 发给别人，口令不能跟着走。
+#    镜像里 config.py 读不到 .env，只能从环境变量取，正好。
+.env
+docker/container.env
+docker/create-db-user.sql
+
+# 50MB 的 Windows 二进制（cloudflared.exe、nginx for Windows），Linux 镜像用不上
+tools/
+
+# 版本库
+.git/
+.gitignore
+.gitattributes
+.vscode/
+
+# 文档（README.md 留着，排查时用得上）
+docs/
+*.tar
+
+# 注意：app/static/geo/plots.geojson 虽然被 .gitignore 忽略，但**必须**打进镜像
+# —— 地图页面要读它，而且它是 gen_geojson.py 在本机生成的，镜像里没有脚本能当场
+# 生成（容器连的库里有坐标数据，但跑生成脚本是另一回事）。
+# docker 不读 .gitignore，所以它默认会被 COPY 进来，别把上面那条照抄成 geo/。

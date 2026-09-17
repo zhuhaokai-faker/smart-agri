@@ -2,7 +2,7 @@
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Smart Agri Analytics - PUBLIC DEMO MODE
+echo   Smart Agri Analytics - PRODUCTION MODE (multi-process)
 echo ============================================================
 echo.
 echo   NOTE: this file is deliberately pure ASCII.
@@ -12,19 +12,9 @@ echo   starts executing from the middle of a line - intermittently).
 echo   Same root cause as requirements.txt having to stay ASCII.
 echo   Chinese documentation for this script lives in README.md.
 echo.
-echo   This starts the SAME cluster as start_prod.bat
-echo   (nginx :8080 -^> 4 x waitress), then puts a Cloudflare
-echo   quick tunnel in front of it and prints a public HTTPS URL.
-echo.
-echo   Local use only? Use start_prod.bat instead - no tunnel,
-echo   no public exposure. Everyday dev? start.bat.
-echo.
-echo   Everything else (component checks, port checks, the tunnel
-echo   itself) lives in deploy\serve_cluster.py --tunnel. The old
-echo   version of this file ran cloudflared here and pointed it at
-echo   the single-process dev server on :5000; that is gone. The
-echo   tunnel now points at nginx, so what the world sees is the
-echo   multi-process cluster, not a Flask instance.
+echo   This starts nginx + several waitress worker processes.
+echo   For everyday local development use start.bat instead - it is
+echo   simpler and reloads on code changes.
 echo.
 
 if not exist ".venv\Scripts\python.exe" (
@@ -33,7 +23,18 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
 )
 
-".venv\Scripts\python.exe" deploy\serve_cluster.py --tunnel %*
+if not exist ".env" (
+    echo [ERROR] .env not found. Copy .env.example to .env and set
+    echo         SECRET_KEY plus the database password first.
+    echo.
+    echo         Production mode refuses to start with the placeholder
+    echo         SECRET_KEY: it is public, so anyone could forge a
+    echo         session cookie and become an admin.
+    pause
+    exit /b 1
+)
+
+".venv\Scripts\python.exe" deploy\serve_cluster.py %*
 set RC=%ERRORLEVEL%
 
 echo.

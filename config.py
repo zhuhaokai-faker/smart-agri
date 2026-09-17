@@ -77,13 +77,36 @@ class Config:
     SQLALCHEMY_DATABASE_URI = SQLALCHEMY_DATABASE_URI
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    # SQLAlchemy 连接池。默认 pool_recycle=-1 表示连接永不过期，
-    # 但 MySQL 默认 wait_timeout 是 8 小时（8.0 同样是 28800 秒），
-    # 超过后连接被服务端单方面关闭，应用再拿这个"死连接"发请求就会报
-    # (2006, 'MySQL server has gone away')。
-    # 设 pool_recycle=3600 让连接每小时自动重建，避开这个经典坑。
+    # SQLAlchemy 连接池。
+    #
+    # 【pool_recycle 为什么必须设】
+    #   默认 pool_recycle=-1 表示连接永不过期，但 MySQL 默认 wait_timeout
+    #   是 8 小时（8.0 同样是 28800 秒），超过后连接被服务端单方面关闭，
+    #   应用再拿这个"死连接"发请求就会报 (2006, 'MySQL server has gone away')。
+    #   设 pool_recycle=3600 让连接每小时自动重建，避开这个经典坑。
+    #
+    # 【为什么池子大小做成了环境变量】
+    #   每个进程有自己独立的池子，总连接数是**相乘**关系：
+    #
+    #       总连接数 = 进程数 × (pool_size + max_overflow)
+    #
+    #   单进程时 pool_size=10 毫无问题，多进程一乘就顶穿 ——
+    #   8 个进程 × (10 + 10) = 160，而 MySQL 默认 max_connections = 151。
+    #   报错是运行期的 "Too many connections"，启动时一切正常，
+    #   等并发上来才炸，排查成本很高。
+    #   （deploy/serve_cluster.py 会在启动前算这笔账并对着 MySQL 校验。）
+    #
+    #   ⚠️ 但要注意：**加大池子不会让应用变快**。实测把 pool_size
+    #      从 10 加到 40，吞吐一点没变、甚至略降，只是平白多了 25 条空转的连接。
+    #      真正的瓶颈是 GIL（见 wsgi.py 的说明），池子只要"够用"——
+    #      够用的标准是 ≥ 每个进程的线程数。
+    #
+    #   做成环境变量，是为了让开发（单进程，用下面的默认值）和
+    #   生产（多进程，由 serve_cluster.py 按进程数缩放）共用同一份代码。
     SQLALCHEMY_ENGINE_OPTIONS = {
-        'pool_size': 10,
+        'pool_size': int(os.getenv('DB_POOL_SIZE', '10')),
+        'max_overflow': int(os.getenv('DB_MAX_OVERFLOW', '10')),
+        'pool_timeout': int(os.getenv('DB_POOL_TIMEOUT', '30')),
         'pool_recycle': 3600,
         'pool_pre_ping': True,   # 取连接前先 ping 一下，失效则自动重建
         'echo': False,

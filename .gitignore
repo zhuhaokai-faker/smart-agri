@@ -8,6 +8,15 @@ __pycache__/
 # 环境配置（含数据库密码，绝不能提交）
 .env
 
+# 容器的运行时配置与建号脚本 —— 同样是口令，同样不能提交。
+# 注意这两个名字看着像普通源码（一个 .env、一个 .sql），
+# 但都含数据库口令，别因为"文件名不像密钥"就顺手 git add 了。
+docker/container.env
+docker/create-db-user.sql
+
+# docker save 导出的镜像包（几百 MB，且是可重建的产物）
+*.tar
+
 # 生成的数据文件（可由脚本重建）
 app/static/geo/plots.geojson
 
@@ -18,7 +27,7 @@ tools/
 # IDE
 .idea/
 *.swp
-
+docs/
 # .vscode 只忽略个人偏好类文件，settings.json 要保留 ——
 # 它把解释器指向项目 .venv，避免每个人 clone 后都要手动切（见 env_check.py 的说明）
 .vscode/*

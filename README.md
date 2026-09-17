@@ -18,6 +18,7 @@
 - [九、演示数据说明](#九演示数据说明)
 - [十、项目中的真实 Bug 记录](#十项目中的真实-bug-记录)
 - [十一、已知限制](#十一已知限制)
+- [十二、对外部署（多进程）](#十二对外部署多进程)
 
 ---
 
@@ -362,35 +363,53 @@ copy .env.example .env
 
 ### 临时让别人访问（不租服务器）
 
-双击 **`start_public.bat`**，它会用 Cloudflare 快速隧道（`cloudflared`）把本机的
-5000 端口映射到一个公网 HTTPS 地址，形如
-`https://随机单词-xxxx.trycloudflare.com`。**不需要注册账号，也不需要租服务器**。
-把那个地址发给别人即可访问；关掉窗口隧道立刻断开。
+双击 **`start_public.bat`**。它起的是**和多进程部署同一套集群**（nginx :8080 +
+4 × waitress），再用 Cloudflare 快速隧道（`cloudflared`）把 **8080** 映射到一个
+公网 HTTPS 地址，形如 `https://随机单词-xxxx.trycloudflare.com`。
+**不需要注册账号，也不需要租服务器**。关掉窗口（或 Ctrl+C）隧道立刻断开。
 
 ```
 start_public.bat
-   ├─ 1/2  以 --prod 启动应用（debug 关闭）
-   └─ 2/2  cloudflared tunnel --url http://127.0.0.1:5000
+   └─ serve_cluster.py --tunnel
+        ├─ 4 × waitress :8001..8004（只监听回环）
+        ├─ nginx :8080               ← 对外入口
+        └─ cloudflared tunnel --url http://127.0.0.1:8080
                 → https://xxxx.trycloudflare.com
 ```
+
+> **隧道指向的是 nginx，不是 5000。** 早期版本是拿 `run.py --prod` 起单进程、
+> 再直接暴露 5000；现在是整套集群对外。想看集群本身，用 `start_prod.bat`；
+> 只想本机开发，用 `start.bat`。
 
 **⚠️ 公开之前必须先理解这三道闸门，它们都不是"形式上的检查"：**
 
 | 闸门 | 拦住什么 |
 |---|---|
-| `--prod`（关掉 debug） | Flask 调试器允许访问者在浏览器里**执行任意 Python 代码**。开着 debug 暴露到公网，等于把机器交出去 —— Werkzeug 那个 PIN 是防手滑的，不是安全边界 |
+| 对外这条路**根本不经过 Flask 内置服务器** | 对外入口是 nginx → waitress，**没有调试器可暴露**。Flask 调试器只存在于 `start.bat` 的开发模式（5000 端口），而 `start_public.bat` 压根不启动它。这比"记得加 `--prod`"更可靠：不是靠人记得关，是那条路上没有这个东西 |
 | `SECRET_KEY` 不能是占位值 | 占位密钥是公开的，任何人都能用它**伪造 session cookie**，不猜密码就变成管理员，而且日志里看不出异常 |
-| 端口 5000 未被占用 | 如果 5000 上还挂着一个**开发模式**的旧实例，隧道会指向那个实例，等于把调试器暴露出去。"以为在跑安全模式、实际隧道指向别处"是这里最容易犯的错 |
+| 8080 与 8001-8004 都未被占用 | 半个旧集群还活着的话，请求会打进没人值守的端口，表现为**间歇性 502** —— 这种"时好时坏"最难排查。所以 `serve_cluster.py` 在启动前统一查一遍端口，被占就拒绝启动 |
 
-前两道在 `run.py` 的 `preflight()` 里**直接拒绝启动**（不是打印警告 —— 警告没人看），
-第三道在 `start_public.bat` 里。三者都是"一旦暴露就不可挽回"的情况，
+第二道在 `wsgi.py` 里**直接拒绝启动**（每个 worker 各拦一次，绕过编排脚本也拦得住），
+`serve_cluster.py` 在拉起 worker **之前**又拦一次 —— 后者的意义是把报错挪到前面，
+否则用户看到的是"worker :8001 在 30 秒内没有起来"，而真正的原因被刷到屏幕外面。
+第三道同样在 `serve_cluster.py`。三者都是"一旦暴露就不可挽回"的情况，
 其余（演示口令、公开注册开关）属于使用者的取舍，脚本不替你做决定。
+
+**审计日志在隧道下依然可用。** 这是 `start_public.bat` 不同于"随手开个隧道"的
+地方：隧道会在 nginx 前面再套一层，`$remote_addr` 随之变成 cloudflared 的地址
+（127.0.0.1），来源 IP 会集体退化成 127.0.0.1。`deploy/nginx.conf` 里用 realip
+模块取 Cloudflare 边缘写入的 `CF-Connecting-IP` 把头换回来 —— 用单值头而不是
+`X-Forwarded-For`，是因为后者是一条客户端能自己塞值的链。细节见该文件里那段注释。
 
 **已知取舍**：`ALLOW_REGISTRATION` 默认是开的，所以公网上任何人都能注册一个
 只读账号。演示完请立即关掉隧道窗口。
 
+**地址每次重启都会变。** 快速隧道不支持固定子域，地址是每次启动时分配的 ——
+脚本会把它从 cloudflared 的输出里读出来打在启动摘要里。要固定地址得用命名隧道
+（需要自己的域名和 Cloudflare 账号）。
+
 > `tools/cloudflared.exe` 不在仓库里（50MB 的二进制，且平台相关）。
-> 首次使用按 `start_public.bat` 的提示单独下载，国内可从 GitHub 镜像取。
+> 首次使用按 `serve_cluster.py` 的提示单独下载，国内可从 GitHub 镜像取。
 > `tools/` 已在 `.gitignore` 中。
 
 ---
@@ -427,24 +446,42 @@ smart-agri-analytics/
 │   ├── 05_tests.sql               ★ 25 条 SQL 断言
 │   └── 06_audit_json.sql          ★ JSON_TABLE 审计分析
 │
-├── env_check.py                   ★ 解释器环境预检（四个入口共用）
-├── start.bat                      一键启动（CRLF 换行，见 Bug 7）
-├── start_public.bat               公网演示：--prod 启动 + Cloudflare 隧道（纯 ASCII，见 Bug 11）
-├── tools/                         cloudflared.exe（不进仓库，见 .gitignore）
+├── env_check.py                   ★ 解释器环境预检（各入口共用）
+├── wsgi.py                        ★ 对外部署的 WSGI 入口（waitress / gunicorn 共用）
+├── start.bat                      本地开发一键启动（CRLF 换行，见 Bug 7）
+├── start_public.bat               公网演示：同一套集群 + Cloudflare 隧道（纯 ASCII，见 Bug 11）
+├── start_prod.bat                 ★ 对外部署：nginx + 多进程（纯 ASCII，见 Bug 11）
+├── Dockerfile                     ★ Linux 容器：nginx + gunicorn
+├── .dockerignore                  构建上下文裁剪（漏掉 .venv 会构建出坏镜像）
+├── docker/                        容器专用（Windows 那套在 deploy/ 下）
+│   ├── nginx.conf                 容器版 nginx（upstream 单端口、绝对路径）
+│   ├── entrypoint.sh              两个进程的监工：启动前检查 + 收尾顺序
+│   ├── container.env              运行时配置（含口令，已 gitignore）
+│   └── create-db-user.sql         建容器专用 MySQL 账号（含口令，已 gitignore）
+├── tools/                         cloudflared.exe / nginx（不进仓库，见 .gitignore）
+├── deploy/                        ★ Windows 对外部署（容器里用 gunicorn，不需要这些）
+│   ├── serve_cluster.py           进程编排 + 连接数预算校验 + ASCII 路径绕法（Bug 13）
+│   ├── waitress_worker.py         单个 waitress 进程（走 Python API 以设 trusted_proxy）
+│   └── nginx.conf                 反代 + 静态托管 + 负载均衡
 ├── scripts/
 │   ├── init_db.py                 建库建表（含破坏性操作保护）
 │   ├── seed.py                    ★ 造数：3 年 + 7 类分布 + 审计日志
 │   ├── calibrate_gdd.py           ★ 按实际气候标定作物所需积温
 │   ├── gen_geojson.py / from_shp.py
+│   ├── loadtest.py                ★ 零依赖并发压测（支持并发梯度 + MySQL 连接数采样）
 │   ├── verify.py                  ★ 30 条断言（SQL 层 25 + 服务层 5）
 │   ├── _e2e_yield_check.py        产量 收获日/编辑/删除 + CSRF 端到端（36 项）
 │   ├── _test_register.py          注册功能端到端测试（29 项）
+│   ├── _db_probe.py               裸 SQL 吞吐（区分应用层慢还是数据库慢）
+│   ├── _pool_probe.py             改池子大小做对照实验，不改 config.py
+│   ├── _profile_pages.py          逐页拆解"等 SQL"与"Python 自己跑"的占比
 │   └── _verify_startup_order.py   启动流程文档的断言验证（17 项）
 │
 └── docs/
     ├── 启动与请求流程.md           ★ run.py 之后发生了什么（含断言验证）
     ├── SQL深度解析.md              ★ 8 组查询逐条原理 + 5.7/8.0 对比
     ├── 数据库设计.md               表结构与索引决策论证
+    ├── 压测与并发部署实录.md        ★ 瓶颈定位全过程 + 多进程方案（含时间线）
     └── 面试问答.md                 ★ 预演追问
 ```
 
@@ -920,6 +957,93 @@ ModuleNotFoundError: No module named 'flask_login'
   会解析成 Unix 的 `timeout` 并报 `invalid time interval '/t'`。
   改成 `ping -n 7 127.0.0.1 > nul` —— 这个写法不依赖 PATH 上有哪个 `timeout`。
 
+### Bug 12：`proxy_set_header Host $host` 少了一个端口，部分链接直接连不上
+
+**现象**：上完 nginx 多进程部署后压测，356 个错误，**全部集中在 `/weather`**，
+其余 10 个路径一个错都没有：
+
+```
+⚠️ 356 个错误，去重后 1 类：
+    ×356   /weather  HTTP 0: [WinError 10061] 由于目标计算机积极拒绝，无法连接。
+```
+
+**根因**：`/weather` 是需要补斜杠的路由，Flask 会回 308 重定向。
+重定向的目标地址由 Werkzeug 用 `request.host` 拼成绝对 URL，
+而 nginx 那边配的是：
+
+```nginx
+proxy_set_header Host $host;     # ← $host 是规范化主机名，**不含端口**
+```
+
+对比实测：
+
+```
+经 nginx:   /weather -> 308  Location: http://127.0.0.1/weather/        ← 掉了 :8080
+直连 worker: /weather -> 308  Location: http://127.0.0.1:8001/weather/
+```
+
+少了端口，客户端就去连 80 端口 —— 本机没有监听 80，于是连接被拒。
+
+**为什么只在 `/weather` 出现**：只有这个路由需要靠 308 补斜杠
+（`/analytics/gdd` 这些带完整子路径的请求不会触发）。在浏览器里的表现是
+"偶尔有个链接点不开"，而且刷新一下可能又好了（浏览器补斜杠），
+**归因到代码上根本查不出来**。
+
+**修复**：改用 `$http_host`（客户端发来的原始 Host 头，含端口）。
+
+```nginx
+proxy_set_header Host $http_host;
+proxy_set_header X-Forwarded-Host $http_host;
+```
+
+**教训**：`$host` 和 `$http_host` 在 nginx 文档里只差一句话，
+在带非默认端口的部署上却是"能用"和"不能用"的区别。
+这类错误**不会出现在应用日志里**（请求根本没到应用），
+只在压测的按路径分解里露出来 —— 这也是压测报告要按路径分组，
+而不是只给一个总成功率的原因。
+
+### Bug 13：nginx 的 Windows 版处理不了非 ASCII 路径
+
+**现象**：4 个 waitress 进程全部正常监听，nginx 却直接启动失败：
+
+```
+nginx: [alert] could not open error log file: CreateFile()
+       "...\tools\nginx/logs/error.log" failed
+       (1113: No mapping for the Unicode character exists in the
+        target multi-byte code page)
+nginx: [emerg] CreateFile() "...\conf/nginx.conf" failed (1113: ...)
+```
+
+注意报错里路径变成了 `?...` —— 中文字符已经无法映射。
+
+**根因**：nginx 的 Windows 构建走 **ANSI 文件 API**，路径中出现非 ASCII 字符
+就无法打开。而这个仓库的默认位置是
+`C:\Users\<中文用户名>\Desktop\<中文目录>\smart-agri-analytics` —— 正好踩中。
+同一条路径下 Python 完全正常（它用宽字符 API），所以现象看起来像"只有 nginx 有问题"。
+
+**试过但无效的方案**：
+- **8.3 短路径名**：实测只给 `smart-agri-analytics` 生成了 `SMART-~1`，
+  但 `朱浩恺` 和 `杂` **没有短名别名**，路径照旧含中文。
+  短名不是所有目录都有，不能指望。
+
+**修复**：在纯 ASCII 位置建一个**目录联接（junction）**指向仓库根：
+
+```
+C:\Users\Public\smart-agri  ⇒  C:\Users\朱浩恺\Desktop\杂\smart-agri-analytics
+```
+
+nginx 全程只见 ASCII 路径，由内核在文件系统层解析到真实目录；
+配置里的相对路径（`root ../../app`）照样有效，因为路径穿过 junction 时
+内核先解析联接、再继续处理剩余部分。
+junction **不需要管理员权限**（符号链接才需要），普通用户即可创建。
+
+`deploy/serve_cluster.py` 会自动检测：路径是纯 ASCII 就直接用，
+否则建好联接再启动 —— 所以这个绕法对使用者是透明的。
+
+> **这是 Windows 特有的问题，Linux/容器里不存在**（路径本来就是 ASCII，
+> 而且容器里用的是 gunicorn，不会跑这个编排脚本）。
+> 换句话说：这条 bug 的存在本身就是"该往 Linux 部署走"的一个论据。
+
 ---
 
 ## 十一、已知限制
@@ -940,9 +1064,13 @@ ModuleNotFoundError: No module named 'flask_login'
    隧道开着时任何人都能注册一个只读账号。演示完应立即关掉隧道窗口。
    要长期开放的话，把 `.env` 里的 `ALLOW_REGISTRATION` 改成 `false`
    （这个开关做成配置项而不是写死，就是为了这种时候不用改代码）。
-8. **Flask 内置服务器只适合演示** —— 隧道跑的就是它。它能扛住几个人的演示，
-   但不具备多进程、超时控制、优雅重启。真要长期对外，换 waitress（Windows）
-   或 gunicorn（Linux）即可，`create_app()` 工厂不用改。
+8. **`start.bat` / 内置服务器仍然只适合本地开发** —— 隧道跑的也是它。
+   对外部署走 `start_prod.bat`（nginx + 多进程 waitress），见第十二节。
+   但要注意：**多进程解决的是吞吐，不是单点**。
+   4 个 worker 只是把 GIL 这个天花板抬高了 2.4 倍，机器一挂全挂，
+   没有健康检查、没有自动重启、没有 worker 崩溃后的自动摘除
+   （`serve_cluster.py` 检测到 worker 退出会停掉整个集群，这是"快速失败"，
+   不是"自愈"）。真要做到高可用，还需要进程守护和多个实例。
 7. **删除产量记录后，批次仍是"已收获"** —— 状态机里 `40` 是终态，没有回退路径，
    所以删除不会把批次退回"成熟待收"。批次会重新出现在「录入产量」的待办列表里，
    可以补录（唯一约束 `uk_planting` 随记录一起释放）。
@@ -950,6 +1078,174 @@ ModuleNotFoundError: No module named 'flask_login'
    `planting_service.suggest_next_actions()` 本来就会对这类批次提示
    "已标记收获，但尚未录入产量记录"。
    删除前的完整快照写进 `audit_log`，记录本身则不可恢复；这也是删除只给管理员的原因。
+
+---
+
+## 十二、对外部署（多进程）
+
+### 为什么需要它 —— 压测给出的答案
+
+先压测再改，不靠猜。用 `scripts/loadtest.py`（零依赖，纯标准库）测出的原始状态：
+
+| 并发 | RPS | p50 | p95 |
+|---|---|---|---|
+| 8 | 196 | 39ms | 69ms |
+| 16 | 182 | 83ms | 132ms |
+| 32 | 176 | 175ms | 268ms |
+| 64 | 177 | 347ms | 599ms |
+
+RPS 在 8 并发就见顶，之后并发翻倍、RPS 不涨、延迟线性翻倍 —— 典型的排队。
+
+**排查过程是把三个"看起来像"的嫌疑逐个排除掉的**：
+
+| 嫌疑 | 验证方法 | 结论 |
+|---|---|---|
+| 连接池不够 | 把 `pool_size` 从 10 加到 40 重压 | ❌ 吞吐一点没变，甚至略降 |
+| Flask 太慢 | 压纯静态文件 | ❌ 1126 RPS |
+| MySQL 太慢 | 裸 pymysql 压同样的 SQL | ❌ 5000+ 查询/秒 |
+| **GIL** | 逐页拆解 + 测进程 CPU | ✅ 84% 时间在等 SQL，进程只用 1.40 核 |
+
+多进程扩展性实测（同样 32 个客户端线程）：
+
+```
+1 进程   176 RPS
+2 进程   278 RPS   （1.58×）
+4 进程   425 RPS   （2.42×）
+```
+
+> 顺带纠正一个常见误解：**加连接池不会让应用变快**。
+> 池子打满是症状不是原因 —— 实测把池子放大到 60 条，
+> 连接数涨到 45，但 MySQL 里真正在执行的查询峰值还是只有 6 条，
+> 多出来的全是空转。所以池子只要"够用"（≥ 每进程线程数）即可。
+
+### 架构
+
+```
+nginx  :8080
+├── /static/vendor/  → 直接读磁盘（缓存 30 天）
+├── /static/         → 直接读磁盘（缓存 1 小时）
+└── /                → 轮询分发
+                       ├── waitress :8001 × 8 线程
+                       ├── waitress :8002 × 8 线程
+                       ├── waitress :8003 × 8 线程
+                       └── waitress :8004 × 8 线程
+```
+
+### 用起来
+
+```bash
+# 一键启动（会先做连接数预算校验，超了直接拒绝启动）
+start_prod.bat
+
+# 或者手动调参
+.venv\Scripts\python.exe deploy\serve_cluster.py --workers 6 --threads 8
+
+# 同一套集群 + Cloudflare 快速隧道，临时开个公网地址（地址每次重启都变）
+start_public.bat
+.venv\Scripts\python.exe deploy\serve_cluster.py --tunnel
+```
+
+首次使用需要先下载 nginx（不进仓库）：见 `deploy/serve_cluster.py` 里
+`check_nginx()` 打印的指引。
+
+### 改完之后的实测结果
+
+| 并发 | 单进程 | 生产集群 | 提升 |
+|---|---|---|---|
+| 16 | 182 | **445** | 2.44× |
+| 32 | 176 | **442** | 2.50× |
+| 64 | 177 | **429** | 2.42× |
+
+而且 p95 在 32 并发时从 268ms 降到 162ms，成功率 100%。
+拐点从 8 并发推到了 ~64。
+
+### 三个不显眼但会静默出错的点
+
+1. **`proxy_set_header Host` 必须用 `$http_host`**（含端口），
+   用 `$host` 会让重定向丢掉端口 —— 见 Bug 12。
+2. **waitress 必须设 `trusted_proxy`**。它默认
+   `clear_untrusted_proxy_headers=True`，会把 nginx 传来的
+   `X-Forwarded-For` **直接删掉**，审计日志的 IP 全部退化成 127.0.0.1，
+   且不报任何错。而 `waitress-serve` 命令行**没有**这个开关，
+   所以 `deploy/waitress_worker.py` 走的是 Python API 而不是 CLI。
+3. **nginx 覆盖而不追加 `X-Forwarded-For`**。`audit_service.client_ip()`
+   取第一个值，若用常见的 `$proxy_add_x_forwarded_for`，
+   客户端自己发的头会排在最前面 —— **任何人都能往审计日志里写任意来源 IP**。
+   走 nginx 之前 `request.remote_addr` 取自 TCP 连接、无法伪造，
+   是"加一层反代"这个动作本身把这个性质弄丢的，必须补回来。
+
+### Linux 容器部署（nginx + gunicorn）
+
+`wsgi.py` 是 gunicorn 和 waitress **共用**的入口。仓库根有 `Dockerfile`，
+容器里 nginx 对外、gunicorn 管多进程，两个进程由一个入口脚本统一纳管。
+
+```bash
+# 1) 给容器建一个专用 MySQL 账号（库里现在只有 root@localhost，容器连不上）
+mysql -uroot -p < docker/create-db-user.sql
+
+# 2) 构建
+#    国内网络请带上软件源参数：直连 Debian 官方源实测大量 503、带宽 54 kB/s，
+#    apt 那一步必失败。默认不写死国内镜像，否则这份 Dockerfile 在国外跑不通。
+docker build \
+  --build-arg DEBIAN_MIRROR=mirrors.tuna.tsinghua.edu.cn \
+  --build-arg PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+  -t smart-agri-analytics:latest .
+
+# 3) 运行（配置全部运行时注入，镜像里不烘焙任何口令）
+docker run --rm -p 8080:80 --env-file docker/container.env smart-agri-analytics:latest
+
+# 4) 导出成一个 tar，可以在别的机器上 docker load 回来
+docker save -o smart-agri-analytics.tar smart-agri-analytics:latest
+```
+
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | 镜像定义。`python:3.12-slim` + nginx + tini |
+| `.dockerignore` | 构建上下文裁剪。**漏掉 `.venv` 会构建出坏镜像**，见文件里的 ⚠️ |
+| `docker/nginx.conf` | 容器版 nginx。相对 Windows 版只有两处不同：upstream 一个端口、路径改绝对 |
+| `docker/entrypoint.sh` | 两个进程的监工：启动前检查 → 等上游就绪 → 任一退出就整体收摊 |
+| `docker/container.env` | 运行时配置（**含口令，已 gitignore**） |
+| `docker/create-db-user.sql` | 建容器专用账号（**含口令，已 gitignore**） |
+
+**几个不显然的决定：**
+
+1. **镜像里建了 venv。** 容器本身就是隔离，按说不该再套一层。但
+   `env_check.py` 会把"没跑在本项目的 `.venv` 里"判成环境错误并退出，
+   而每个入口都先跑它 —— 不满足就根本起不来。可以给那检查开后门，但那样
+   同时放松了开发机上的保护。这里是**满足它**：解释器就放在它预期的
+   `/app/.venv`。代价是镜像大几十 MB，换来两边跑同一份代码、没有分支。
+2. **一个容器里两个进程。** 常见做法是分成两个容器。这里合成一个是为了
+   镜像能整包带走（`docker save` 出一个 tar 就能在别处跑），代价是容器内
+   要自己管两个进程的生死，也就是 `entrypoint.sh` 存在的理由。
+3. **配置全部运行时注入。** 镜像会被 `docker save` 成 tar 发给别人，而层就是
+   普通 tar、内容可读 —— 口令烘焙进去等于随镜像发出去，换密码还得重新构建。
+4. **必须设 `TZ`。** 容器默认 UTC，而 `date.today()` 参与收获日期和种植批次
+   状态的判定（`planting_service.py`），差 8 小时会让北京时间 0 点到 8 点之间
+   算出来的日期是前一天。`python:slim` 不带 `tzdata`，缺了它 `TZ` 会被**静默忽略**。
+5. **`gunicorn` 装在 Dockerfile 里，不在 `requirements.txt` 里。** 那份清单
+   Windows 开发环境也用它，而 gunicorn 在 Windows 上根本起不来（依赖 `os.fork`）。
+6. **必须把 venv 放进 `PATH`。** 第一版漏了这行，容器起来就报
+   `entrypoint.sh: gunicorn: command not found` —— venv 建在 `/app/.venv`，
+   但**没有任何地方 activate 过它**：开发机上人敲 `source .venv/bin/activate`，
+   容器里没人敲这一步。构建期完全看不出来（Dockerfile 里用的都是绝对路径），
+   只有真跑起来才暴露。这类"构建成功但运行即死"的问题是容器化最容易踩的坑。
+
+**和 Windows 那套的对照** —— 同一件事，两边的工作量完全不同：
+
+| | Windows | Linux 容器 |
+|---|---|---|
+| 多进程 | 没有 gunicorn，自己写 `serve_cluster.py` 编排 N 个 waitress | `gunicorn -w 4` 自己管 |
+| 进程分发 | 必须有 nginx（多进程需要有东西分流） | nginx 只为静态文件和反代 |
+| 非 ASCII 路径 | nginx 用 ANSI API，得建 junction 绕开（Bug 13） | 路径本来就在 `/app`，用不上 |
+| X-Forwarded-For | waitress 默认**删掉**它，必须走 Python API 设 `trusted_proxy` | gunicorn 原样透传，不用管 |
+| 日志 | 直接看控制台 | 两个进程都接进 `docker logs` |
+
+> 部署这件事本身就说明了平台差异：Windows 上要自己写进程编排、还得绕开
+> nginx 的非 ASCII 路径限制；Linux 上一条 `gunicorn -w 4` 就够了。
+>
+> 但容器也不是白拿的 —— 多进程的监工问题并没有消失，只是从
+> `serve_cluster.py` 挪到了 `entrypoint.sh`：一样要拦启动前的错、
+> 一样要在任一进程死掉时整体收摊、一样要按信号由外向内收尾。
 
 ---
 
