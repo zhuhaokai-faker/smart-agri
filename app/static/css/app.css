@@ -284,3 +284,31 @@ body {
     margin-right: 5px;
     vertical-align: middle;
 }
+
+/* ---------------------------------------------------------------- 演示模式 */
+/* 演示/面试时隐藏页面上的教学/展示内容，源码保留、只是不渲染。
+   由 config.DEMO_MODE 控制 base.html（和独立页 register.html）的
+   <body> 是否带 demo-mode。
+
+   .note        —— 手写的说明块 + M.note / M.gotcha 宏
+   .teach-block —— M.question / M.legacy57 宏（这两个 class 不含 note）
+   .sql-block   —— M.sql_block 宏，即"实际执行的 SQL"深色代码块
+
+   【.sql-block 为什么也算演示内容】
+     它的标题长这样："实际执行的 SQL —— 分作物的皮尔逊相关系数（手写公式）"。
+     "手写公式"四个字对农户/农艺师毫无意义，它唯一的读者是懂 SQL 的人 ——
+     在说"我没调库函数，公式是自己推的"。判断一段文字该不该出现在产品页面上，
+     看的不是它讲的主题，而是【它在跟谁说话】。
+     想只藏文案、保留 SQL 的话，把 .sql-block 从下面这组选择器里摘出去即可。   */
+body.demo-mode .note,
+body.demo-mode .teach-block,
+body.demo-mode .sql-block {
+    display: none !important;
+}
+
+/* 【这里的 !important 是必需的，不是顺手加的】
+   上面三条里只有 .teach-block 真正需要它：M.question 输出的元素带 Bootstrap 的
+   .d-flex，而 .d-flex{display:flex!important} 自己就带 !important —— 不带
+   !important 的声明无论优先级多高都会输给它。两边都带 !important 之后才轮到比
+   优先级，body.demo-mode .teach-block (0,2,1) 才压得住 .d-flex (0,1,0)。
+   （.note 和 .sql-block 都没有这个对手，本可以不加。）                       */

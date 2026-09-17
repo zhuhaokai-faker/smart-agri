@@ -122,6 +122,10 @@ def _register_jinja(app):
             'CROP_CATEGORIES': cfg.CROP_CATEGORIES,
             'FERTILITY_LEVELS': cfg.FERTILITY_LEVELS,
             'app_name': '智慧农业种植管理与产量分析平台',
+            # 演示模式：为真时 base.html 给 <body> 加 demo-mode，隐藏教学文案块
+            # 注意是 cfg.Config.DEMO_MODE —— 它定义在 Config 类里，不是模块级，
+            # 上面那些（PLANTING_STATUS 等）才是模块级，别照着抄混了。
+            'demo_mode': cfg.Config.DEMO_MODE,
         }
 
 

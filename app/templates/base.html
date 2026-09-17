@@ -13,7 +13,7 @@
 <link rel="stylesheet" href="{{ url_for('static', filename='css/app.css') }}">
 {% block head %}{% endblock %}
 </head>
-<body>
+<body{% if demo_mode %} class="demo-mode"{% endif %}>
 
 <!-- ===================== 侧边栏 ===================== -->
 <nav class="sidebar">
